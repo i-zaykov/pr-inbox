@@ -6,6 +6,7 @@
 //   pr-inbox record-review --repo o/r --branch b --sha s --verdict pass|fail [--summary text]
 mod github;
 mod overview;
+mod release;
 mod reviews;
 mod runs;
 mod server;

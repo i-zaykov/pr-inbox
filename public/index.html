@@ -63,6 +63,13 @@ textarea.input { border-radius: var(--radius-md); padding: 12px 14px; }
 .filter[aria-pressed="true"] { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-neutral-900); }
 .filter .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dot); }
 .filter .n { font-weight: 400; opacity: .75; }
+/* Group by status or repository, at the end of the filter row. */
+.group-by { margin-left: auto; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; border: 1px solid var(--color-neutral-700); }
+.group-by .label { font-size: 12px; color: var(--color-neutral-400); padding: 0 6px 0 10px; }
+.group-by button { all: unset; cursor: pointer; padding: 5px 12px; border-radius: 999px; font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--color-neutral-100); transition: background-color .18s, color .18s; }
+.group-by button:hover { background: var(--color-neutral-800); }
+.group-by button[aria-pressed="true"] { background: var(--color-neutral-100); color: var(--color-neutral-900); }
+.group-by button:focus-visible { outline: 2px solid var(--color-accent); }
 
 /* notices */
 .notice { max-width: 1440px; margin: 0 auto 20px; padding: 0 32px; }
@@ -98,9 +105,18 @@ main { flex: 1 1 640px; min-width: 0; display: flex; flex-direction: column; gap
 .bucket-head h2 { margin: 0; font-size: 24px; }
 .count { transition: background-color .3s; min-width: 28px; height: 28px; padding: 0 8px; border-radius: 999px; background: var(--dot); color: var(--ink); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
 .bucket-hint { font-size: 14px; color: var(--color-neutral-700); }
-.bucket-head .btn { margin-left: auto; border-radius: 999px; font-size: 13px; }
+.bucket-head .btn { border-radius: 999px; font-size: 13px; }
+.head-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .rows { display: flex; flex-direction: column; gap: 8px; }
 .empty { padding: 28px; border-radius: var(--radius-lg); background: var(--color-neutral-100); color: var(--color-neutral-700); font-size: 14px; }
+/* Repository groups: which lanes the repo's PRs are in, and how its next release looks. */
+.lanes-in { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--color-neutral-800); }
+.lane-chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.lane-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dot); flex: none; }
+.pr-ref .lane-chip { font-family: var(--font-body); font-size: 12px; font-weight: 600; color: var(--color-neutral-800); }
+.repo-release { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 4px; font-size: 13px; color: var(--color-neutral-700); }
+.ver { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: var(--color-neutral-900); }
+.repo-release .pending { color: var(--color-accent-700); font-weight: 600; }
 .skeleton { height: 92px; border-radius: var(--radius-md); background: var(--color-neutral-100); animation: pulse 1.4s ease-in-out infinite; }
 
 .pr { position: relative; background: var(--color-neutral-100); border-radius: var(--radius-md); padding: 18px 22px; display: flex; gap: 16px; align-items: center; transition: opacity .3s, box-shadow .2s, transform .2s; }
@@ -194,12 +210,17 @@ main { flex: 1 1 640px; min-width: 0; display: flex; flex-direction: column; gap
 .dialog .btn { border-radius: 999px; }
 .quick { display: flex; gap: 6px; flex-wrap: wrap; }
 .quick .btn { font-family: var(--font-body); font-size: 12.5px; padding: 6px 12px; }
+.ship-list { display: flex; flex-direction: column; gap: 10px; max-height: 52vh; overflow: auto; }
+.ship-repo { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--radius-md); background: var(--color-neutral-200); }
+.ship-repo .head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-weight: 700; }
+.ship-repo p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--color-neutral-800); }
 .check { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--color-neutral-700); cursor: pointer; }
 .check input { accent-color: var(--color-accent); width: 16px; height: 16px; }
 
 .toasts { position: fixed; left: 24px; bottom: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
 .toast { background: var(--color-neutral-900); color: var(--color-neutral-100); padding: 10px 18px; border-radius: 999px; box-shadow: var(--shadow-lg); font-size: 14px; max-width: 460px; }
 .toast.err { background: var(--color-accent-700); }
+.toast a { color: var(--color-accent-300); font-weight: 600; margin-left: 8px; }
 
 @media (max-width: 760px) {
   .top-row, .filters, .layout, .notice { padding-left: 16px; padding-right: 16px; }
@@ -242,6 +263,8 @@ const ICON = {
   more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
+  tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
+  rocket: '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
 }
 const icon = (name, size = 16, cls = '') => `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name]}</svg>`
 
@@ -272,6 +295,8 @@ const VERBS = {
     title: pr => `Merge ${short(pr)}?`,
     body: pr => `<p style="margin:0">Squash-merges <b>${esc(pr.title)}</b> into <code>${esc(pr.base)}</code>. If anyone pushes to it first, GitHub refuses the merge.</p>`,
     go: 'Merge' } },
+  // Opens the Merge & release dialog, which says how the PR's repo releases before anything runs.
+  ship: { menu: 'Merge & release…', mine: true, ship: true, when: pr => releasable(pr.repo) },
   close: { menu: 'Close…', gh: 'close', mine: true, danger: true, doing: 'Closing', did: 'Closed', confirm: {
     title: pr => `Close ${short(pr)}?`,
     body: pr => `<p style="margin:0">Closes <b>${esc(pr.title)}</b> without merging. You can reopen it on GitHub.</p>`,
@@ -310,10 +335,16 @@ const KIND = { fix: ['Fixing CI', 'CI fix'], rebase: ['Rebasing', 'Rebase'], rev
   relevance: ['Checking relevance', 'Relevance check'], ask: ['Claude working', 'Claude request'], task: ['Claude working', 'Claude request'] }
 const RUN_DOT = { done: 'var(--color-accent-2-600)', running: 'var(--color-accent)', queued: 'var(--color-accent)', failed: 'var(--color-accent-700)', stopped: 'var(--color-neutral-500)', interrupted: 'var(--color-neutral-500)' }
 
+// Per-viewer preferences; storage can be missing (private window) and the page works without it.
+const recall = key => { try { return localStorage.getItem(`pr-inbox:${key}`) } catch { return null } }
+const remember = (key, value) => { try { localStorage.setItem(`pr-inbox:${key}`, value) } catch {} }
+
 const S = {
   inApp: new URLSearchParams(location.search).has('app'),
   data: null, runs: [], health: null, loading: false, error: null,
-  lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: undefined, logOpen: {}, fullLog: {}, flash: null,
+  // How each of your repos releases (from /api/releases), why one could not be checked, and releases in flight.
+  plans: {}, planErrors: {}, releasing: {},
+  group: recall('group') === 'repo' ? 'repo' : 'lane', lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: undefined, logOpen: {}, fullLog: {}, flash: null,
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
   // Motion bookkeeping: what has already been on screen, so a re-render never replays an entrance.
   seen: new Set(), counts: {}, heroKey: null,
@@ -371,10 +402,12 @@ async function api(path, body) {
   return json
 }
 
-function toast(text, isErr = false) {
+// `href`: a link the toast offers (a release it made), which keeps it up longer.
+function toast(text, isErr = false, href = null) {
   const el = Object.assign(document.createElement('div'), { className: 'toast' + (isErr ? ' err' : ''), textContent: text })
+  if (httpsOnly(href)) el.append(Object.assign(document.createElement('a'), { href, target: '_blank', rel: 'noreferrer', textContent: 'Open' }))
   $('#toasts').append(el)
-  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 260) }, isErr ? 7000 : 4000)
+  setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 260) }, href ? 12000 : isErr ? 7000 : 4000)
 }
 
 // innerHTML re-renders drop focus: put the caret (or the selection) back in the field you were typing in.
@@ -405,9 +438,14 @@ const lastRunFor = pr => S.runs.find(r => r.prUrl === pr.url && !active(r) && Da
 const lanePrs = id => allPrs().filter(pr => pr.lane === id).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
 // A finished gh action keeps its row dimmed with a check for two minutes, then the row follows GitHub again.
 const doneFor = k => S.done[k] && Date.now() - S.done[k].at < 120000 ? S.done[k].label : null
+const idle = pr => !doneFor(keyOf(pr)) && !runFor(pr) && !S.busy[keyOf(pr)]
 // The PRs a bucket's bulk action would take: idle, and offered that action on their own row.
-const actionable = id => lanePrs(id).filter(pr => !doneFor(keyOf(pr)) && !runFor(pr) && !S.busy[keyOf(pr)]
-  && (!LANE[id].bulk || can(LANE[id].bulk.verb, pr, id !== 'waiting')))
+const actionable = id => lanePrs(id).filter(pr => idle(pr) && (!LANE[id].bulk || can(LANE[id].bulk.verb, pr, id !== 'waiting')))
+const repoName = repo => repo.split('/').pop()
+const releasable = repo => ['tag', 'workflow'].includes(S.plans[repo]?.method)
+// Your idle Ready PRs that Merge & release can take: in `repo`, or in every repo that releases.
+const shippable = repo => lanePrs('ready').filter(pr => (!repo || pr.repo === repo) && idle(pr) && can('ship', pr, true))
+const mergeable = repo => lanePrs('ready').filter(pr => pr.repo === repo && idle(pr) && can('merge', pr, true))
 // What Claude said last in a run: its result, or the error it ended on.
 const lastSaid = r => r.events.findLast(e => e.kind === 'result' || e.kind === 'error')
 
@@ -422,7 +460,9 @@ function renderHeader() {
     .concat(LANES.map(l => ({ ...l, n: items.filter(p => p.lane === l.id).length })).filter(l => l.n))
   // A bucket that emptied takes its filter with it, so the board never looks empty behind a hidden filter.
   if (S.data && !pills.some(p => p.id === S.lane)) S.lane = 'all'
-  $('#filters').innerHTML = pills.map(f => `<button class="filter" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}" style="--dot:${f.dot}"><span class="dot"></span>${esc(f.label)}<span class="n">${f.n}</span></button>`).join('')
+  const group = `<div class="group-by" role="group" aria-label="Group pull requests"><span class="label">Group by</span>${[['lane', 'Status'], ['repo', 'Repository']]
+    .map(([id, label]) => `<button data-act="group" data-group="${id}" aria-pressed="${S.group === id}" title="Group by ${label.toLowerCase()} (G)">${label}</button>`).join('')}</div>`
+  $('#filters').innerHTML = pills.map(f => `<button class="filter" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}" style="--dot:${f.dot}"><span class="dot"></span>${esc(f.label)}<span class="n">${f.n}</span></button>`).join('') + group
 }
 
 function renderNotice() {
@@ -515,7 +555,14 @@ function review(pr) {
   return { state: t.state, tip: t.state === 'outdated' ? tip + '; the PR has newer commits' : tip }
 }
 
-function row(pr, lane) {
+// What Merge & release does on a PR of `repo`, for the button's tooltip.
+function shipTip(repo) {
+  const p = S.plans[repo]
+  return p?.method === 'tag' ? `Squash-merge, then release ${p.next} from ${p.branch}` : `Squash-merge, then run ${repoName(repo)}'s release workflow`
+}
+
+// `byRepo`: the row sits in its repository's group, so it names its lane where the repo name would go.
+function row(pr, lane, byRepo = false) {
   const k = keyOf(pr)
   const run = runFor(pr)
   const done = doneFor(k)
@@ -526,7 +573,7 @@ function row(pr, lane) {
   const menu = S.menu !== k ? '' : `<div class="menu" role="menu">
       ${link(pr.url, 'Open on GitHub')}${link(pr.url + '/files', 'View changes')}<div class="sep"></div>
       ${verbs(['fix', 'rebase', 'review', 'thermo', 'relevance'])}<div class="sep"></div>
-      ${verbs(['update', 'ready', 'merge', 'close'])}
+      ${verbs(['update', 'ready', 'merge', 'ship', 'close'])}
     </div>`
   let acts
   if (S.busy[k]) acts = `<span class="done-label" style="color:var(--color-neutral-700)"><span class="spin"></span>${esc(S.busy[k])}</span>`
@@ -538,7 +585,8 @@ function row(pr, lane) {
     // On your own PRs: "Still relevant?" always, and the review until the current commit has passed it.
     const relevance = can('relevance', pr, mine) && verb !== 'relevance' ? `<button class="btn btn-secondary" data-act="verb" data-verb="relevance" title="Claude checks it against today's ${esc(pr.base)}: closes it if it no longer matters, rescues it if it does">Still relevant?</button>` : ''
     const thermo = can('thermo', pr, mine) && review(pr).state !== 'pass' ? `<button class="btn btn-secondary" data-act="verb" data-verb="thermo" title="Run the thermo-nuclear review on this PR's branch">${icon('sparkle', 14)}Thermo review</button>` : ''
-    acts = `${verb ? `<button class="btn ${cls}" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${relevance}${thermo}
+    const ship = verb === 'merge' && can('ship', pr, mine) ? `<button class="btn btn-secondary" data-act="verb" data-verb="ship" title="${esc(shipTip(pr.repo))}">${icon('rocket', 14)}Merge &amp; release</button>` : ''
+    acts = `${verb ? `<button class="btn ${cls}" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${ship}${relevance}${thermo}
       <button class="btn btn-secondary btn-icon" data-act="ask" title="Ask Claude" aria-label="Ask Claude about ${esc(short(pr))}">${icon('chat')}</button>
       <button class="btn btn-ghost btn-icon" data-act="menu" title="More" aria-label="More actions" aria-expanded="${S.menu === k}">${icon('more')}</button>${menu}`
   }
@@ -552,7 +600,7 @@ function row(pr, lane) {
   const lastLine = last ? `<button class="pr-last${last.status === 'failed' ? ' failed' : ''}" data-act="show-run" data-run="${esc(last.id)}">${icon('sparkle', 12)}<span>${esc(KIND[last.kind]?.[1] || 'Claude run')} ${esc(last.status)} ${esc(ago(last.endedAt || last.startedAt))}: ${esc(firstLine(lastSaid(last)?.text || ''))}</span></button>` : ''
   return `<article class="pr${done ? ' done' : ''}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
     <div class="pr-main">
-      <div class="pr-ref">${link(`https://github.com/${pr.repo}`, esc(pr.name))}<span class="num">#${pr.number}</span></div>
+      <div class="pr-ref">${byRepo ? `<span class="lane-chip" style="--dot:${lane.dot}">${esc(lane.label)}</span>` : link(`https://github.com/${pr.repo}`, esc(pr.name))}<span class="num">#${pr.number}</span></div>
       ${link(pr.url, esc(pr.title), 'pr-title')}
       <div class="pr-meta">${tags(pr, lane.id)}<span class="diff"><span class="add">+${pr.additions.toLocaleString()}</span> <span class="del">−${pr.deletions.toLocaleString()}</span></span><span>${plural(pr.files, 'file')}</span><span>${age(pr)}</span>${mine ? '' : `<span>by ${esc(pr.author)}</span>`}</div>
       <div class="pr-sub">${sub}</div>
@@ -569,21 +617,77 @@ function renderBoard() {
     board.innerHTML = hero() + (S.error ? '' : '<div class="rows"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>')
     return
   }
-  const buckets = LANES.filter(l => S.lane === 'all' || S.lane === l.id).map(l => {
-    const list = lanePrs(l.id)
-    if (!list.length) return ''
-    const open = actionable(l.id)
-    const bumped = S.counts[l.id] !== undefined && S.counts[l.id] !== list.length
-    S.counts[l.id] = list.length
-    const bulk = l.bulk && open.length > 1 && !S.bulkBusy[l.id] ? `<button class="btn btn-secondary" data-act="bulk-open" data-lane="${l.id}">${esc(l.bulk.label)} ${open.length}</button>` : ''
-    return `<section class="bucket" data-enter="lane:${l.id}" id="lane-${l.id}">
-      <div class="bucket-head"><h2>${esc(l.label)}</h2><span class="count${bumped ? ' bump' : ''}" style="--dot:${l.dot};--ink:${l.ink}">${list.length}</span><span class="bucket-hint">${esc(l.hint)}</span>${bulk}</div>
-      <div class="rows">${list.map(pr => row(pr, l)).join('')}</div>
-    </section>`
-  }).join('')
+  const buckets = S.group === 'repo' ? repoBuckets() : laneBuckets()
   const empty = `<div class="empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
   board.innerHTML = hero() + (buckets || empty)
   animateNew(board)
+}
+
+// True when a group's PR count changed since the last render, so its count badge bumps.
+function bumped(key, n) {
+  const changed = S.counts[key] !== undefined && S.counts[key] !== n
+  S.counts[key] = n
+  return changed
+}
+
+function laneBuckets() {
+  return LANES.filter(l => S.lane === 'all' || S.lane === l.id).map(l => {
+    const list = lanePrs(l.id)
+    if (!list.length) return ''
+    const open = actionable(l.id)
+    const busy = S.bulkBusy[l.id]
+    const bulk = l.bulk && open.length > 1 && !busy ? `<button class="btn btn-secondary" data-act="bulk-open" data-lane="${l.id}">${esc(l.bulk.label)} ${open.length}</button>` : ''
+    const ship = l.id === 'ready' && !busy && shippable().length > 1 ? `<button class="btn btn-primary" data-act="ship-open">${icon('rocket', 14)}Merge &amp; release ${shippable().length}</button>` : ''
+    return `<section class="bucket" data-enter="lane:${l.id}" id="lane-${l.id}">
+      <div class="bucket-head"><h2>${esc(l.label)}</h2><span class="count${bumped(l.id, list.length) ? ' bump' : ''}" style="--dot:${l.dot};--ink:${l.ink}">${list.length}</span><span class="bucket-hint">${esc(l.hint)}</span><span class="head-acts">${bulk}${ship}</span></div>
+      <div class="rows">${list.map(pr => row(pr, l)).join('')}</div>
+    </section>`
+  }).join('')
+}
+
+// One group per repository, A to Z, its PRs in lane order, so you can plan each repo's release.
+function repoBuckets() {
+  const order = Object.fromEntries(LANES.map((l, i) => [l.id, i]))
+  const shown = allPrs().filter(pr => S.lane === 'all' || pr.lane === S.lane)
+  const repos = [...new Set(shown.map(pr => pr.repo))].sort((a, b) => repoName(a).localeCompare(repoName(b)) || a.localeCompare(b))
+  return repos.map(repo => {
+    const list = shown.filter(pr => pr.repo === repo).sort((a, b) => order[a.lane] - order[b.lane] || Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    const chips = LANES.map(l => [l, list.filter(pr => pr.lane === l.id).length]).filter(([, n]) => n)
+      .map(([l, n]) => `<span class="lane-chip" style="--dot:${l.dot}">${esc(l.label)} ${n}</span>`).join('')
+    const key = `repo:${repo}`
+    return `<section class="bucket" data-enter="${esc(key)}">
+      <div class="bucket-head"><h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none">${esc(repoName(repo))}</a></h2><span class="count${bumped(key, list.length) ? ' bump' : ''}" style="--dot:var(--color-neutral-900);--ink:var(--color-neutral-100)">${list.length}</span><span class="lanes-in">${chips}</span><span class="head-acts">${repoActions(repo)}</span></div>
+      ${releaseLine(repo)}
+      <div class="rows">${list.map(pr => row(pr, LANE[pr.lane], true)).join('')}</div>
+    </section>`
+  }).join('')
+}
+
+function repoActions(repo) {
+  if (S.releasing[repo]) return '<span class="done-label"><span class="spin"></span>Releasing</span>'
+  const merge = mergeable(repo)
+  const ship = shippable(repo)
+  const p = S.plans[repo]
+  const repoAttr = `data-repo="${esc(repo)}"`
+  const out = merge.length > 1 ? [`<button class="btn btn-secondary" data-act="merge-repo" ${repoAttr}>Merge ${merge.length}</button>`] : []
+  if (ship.length) out.push(`<button class="btn btn-primary" data-act="ship-open" ${repoAttr}>${icon('rocket', 14)}Merge &amp; release ${ship.length}</button>`)
+  else if (releasable(repo) && p.unreleased > 0) out.push(`<button class="btn btn-secondary" data-act="release-open" ${repoAttr}>${icon('rocket', 14)}Release${p.next ? ' ' + esc(p.next) : ''}</button>`)
+  return out.join('')
+}
+
+// The repo's release standing: the next tag (or its workflow), the latest one, and what main holds unreleased.
+function releaseLine(repo) {
+  if (!S.data.mine.some(pr => pr.repo === repo)) return ''
+  const p = S.plans[repo]
+  const ver = v => `<span class="ver">${esc(v)}</span>`
+  let parts
+  if (!p) parts = [esc(S.planErrors[repo] ? `Could not check how ${repoName(repo)} releases: ${S.planErrors[repo]}` : 'Checking how it releases…')]
+  else if (p.method === 'none') parts = ['No releases yet, so it only merges']
+  else parts = [
+    p.method === 'tag' ? `Next release ${ver(p.next || '?')}, latest ${ver(p.latest)}` : `Releases with its ${ver('release.yml')} workflow${p.latest ? `, latest ${ver(p.latest)}` : ''}`,
+    p.unreleased ? `<span class="pending">${plural(p.unreleased, 'commit')} on ${esc(p.branch)} not released yet</span>` : p.unreleased === 0 ? `${esc(p.branch)} is fully released` : '',
+  ].filter(Boolean)
+  return `<div class="repo-release">${icon('tag', 14)}${parts.map(part => `<span>${part}</span>`).join('<span aria-hidden="true">·</span>')}</div>`
 }
 
 // ---------- Claude panel ----------
@@ -715,6 +819,26 @@ function drawDialog() {
   } else if (d.type === 'confirm') {
     const c = VERBS[d.verb].confirm
     $('#dialog').innerHTML = frame(c.title(pr), c.body(pr), `${cancel}<button class="btn btn-primary" data-act="dialog-go">${c.go}</button>`)
+  } else if (d.type === 'ship') {
+    // Keys were fixed when the dialog opened; `d.repo` alone is a release with nothing to merge.
+    const prs = d.keys.map(findPr).filter(Boolean)
+    const repos = d.repo ? [d.repo] : [...new Set(prs.map(pr => pr.repo))]
+    const checking = repos.some(r => !S.plans[r] && !S.planErrors[r])
+    const releasing = repos.filter(releasable)
+    const groups = repos.map(repo => {
+      const merging = prs.filter(pr => pr.repo === repo)
+      const p = S.plans[repo]
+      const head = p?.method === 'tag' ? `<span class="ver">${esc(p.latest)} → ${esc(p.next || '?')}</span>` : p?.latest ? `<span class="ver">latest ${esc(p.latest)}</span>` : ''
+      return `<div class="ship-repo"><div class="head">${esc(repoName(repo))}${head}</div>
+        ${merging.length ? `<ul>${merging.map(pr => `<li>#${pr.number} <span>${esc(pr.title)}</span></li>`).join('')}</ul>` : ''}
+        <p>${shipNote(repo, merging.length > 0)}</p></div>`
+    }).join('')
+    const title = !prs.length ? `Release ${repoName(d.repo)}${S.plans[d.repo]?.next ? ' ' + S.plans[d.repo].next : ''}?`
+      : prs.length === 1 ? `Merge and release ${short(prs[0])}?` : `Merge ${prs.length} and release ${plural(releasing.length, 'repo')}?`
+    const how = prs.length ? '<p style="margin:0">Squash-merges each PR, pinned to the commit shown here. A repo releases after its merges, and only when at least one of them went through.</p>' : ''
+    const go = checking ? 'Checking releases…' : prs.length ? 'Merge &amp; release' : 'Release'
+    $('#dialog').innerHTML = frame(title, `<div class="ship-list">${groups}</div>${how}`,
+      `${cancel}<button class="btn btn-primary" data-act="ship-go" ${checking || !releasing.length ? 'disabled' : ''}>${go}</button>`)
   } else if (d.type === 'bulk') {
     const lane = LANE[d.lane]
     const { verb, label } = lane.bulk
@@ -727,6 +851,18 @@ function drawDialog() {
       `<ul>${prs.map(pr => `<li>${esc(short(pr))} <span>${esc(pr.title)}</span></li>`).join('')}</ul>${note}`,
       `${cancel}<button class="btn btn-primary" data-act="bulk-go" ${prs.length ? '' : 'disabled'}>${VERBS[verb].run ? `Start ${plural(prs.length, 'Claude run')}` : `${esc(label)} ${prs.length}`}</button>`)
   }
+}
+
+// What releasing `repo` does, in the Merge & release dialog. `merging`: some of its PRs merge first.
+function shipNote(repo, merging) {
+  const p = S.plans[repo]
+  if (!p) return S.planErrors[repo] ? `Could not check how it releases (${esc(S.planErrors[repo])}), so it only merges.` : 'Checking how it releases…'
+  if (p.method === 'none') return 'This repo has no releases yet, so it only merges.'
+  const branch = `<code>${esc(p.branch)}</code>`
+  const step = p.method === 'tag' ? `creates release <b>${esc(p.next || '?')}</b> on ${branch} with GitHub's generated notes` : `runs the repo's <code>release.yml</code> workflow on ${branch}, which picks the version`
+  const since = p.unreleased ? `${plural(p.unreleased, 'commit')} on ${branch} since ${esc(p.latest)}` : ''
+  if (merging) return `Then PR Inbox ${step}.${since ? ` The release also takes the ${since}, not released yet.` : ''}`
+  return since ? `PR Inbox ${step}, for the ${since}.` : `Nothing new on ${branch} since ${esc(p.latest)}.`
 }
 
 function openDialog(d) {
@@ -757,6 +893,7 @@ async function loadPrs() {
     if (seq !== prsSeq) return
     S.data = data
     S.error = null
+    loadPlans()
     // GitHub works out mergeability lazily: ask once more so "CI running" rows settle.
     retried = !retried && S.data.settling
     if (retried) setTimeout(loadPrs, 6000)
@@ -768,6 +905,20 @@ async function loadPrs() {
       renderAll()
     }
   }
+}
+
+// How your repos release. The server reuses a repo's answer for five minutes, so this follows every PR load.
+let plansSeq = 0
+async function loadPlans() {
+  const seq = ++plansSeq
+  try {
+    const r = await api('/api/releases')
+    if (seq !== plansSeq) return
+    S.plans = r.plans
+    S.planErrors = r.errors
+    renderBoard()
+    if (S.dialog?.type === 'ship') renderDialog()
+  } catch {}
 }
 
 let runsTimer = null
@@ -858,10 +1009,10 @@ async function startRun(kind, pr, note) {
   announce(run)
 }
 
-// Runs one gh action per PR, one at a time, with each row showing its progress; returns how many succeeded.
+// Runs one gh action per PR, one at a time, with each row showing its progress; returns the PRs it succeeded on.
 async function ghEach(verb, prs) {
   const { gh, doing, did } = VERBS[verb]
-  let ok = 0
+  const ok = []
   for (const pr of prs) S.busy[keyOf(pr)] = 'Waiting'
   for (const pr of prs) {
     const k = keyOf(pr)
@@ -870,7 +1021,7 @@ async function ghEach(verb, prs) {
     try {
       await api('/api/pr-action', { action: gh, url: pr.url, headSha: pr.headSha })
       S.done[k] = { label: did, at: Date.now() }
-      ok++
+      ok.push(pr)
     } catch (e) { toast(`${doing} ${short(pr)} failed: ${e.message}`, true) }
     delete S.busy[k]
   }
@@ -892,7 +1043,7 @@ async function runBulk() {
   try {
     if (V.gh) {
       const ok = await ghEach(verb, prs)
-      toast(`${V.did} ${ok} of ${prs.length}`)
+      toast(`${V.did} ${ok.length} of ${prs.length}`)
       return
     }
     const runs = await startEach(V.run, prs, V.note)
@@ -901,6 +1052,46 @@ async function runBulk() {
     delete S.bulkBusy[d.lane]
     renderBoard()
   }
+}
+
+// Releases one repo the way it releases, after a merge or on its own.
+async function releaseRepo(repo) {
+  S.releasing[repo] = true
+  renderBoard()
+  try {
+    const r = await api('/api/release', { repo })
+    toast(r.message, false, r.link)
+  } catch (e) { toast(`Releasing ${repoName(repo)} failed: ${e.message}`, true) }
+  delete S.releasing[repo]
+  delete S.plans[repo]
+  renderBoard()
+  loadPlans()
+}
+
+// Merge & release: per repo, merge its PRs one at a time, then release it once if any of them merged.
+async function ship(d) {
+  const prs = d.keys.map(findPr).filter(Boolean)
+  const repos = d.repo ? [d.repo] : [...new Set(prs.map(pr => pr.repo))]
+  closeDialog()
+  for (const pr of prs) S.busy[keyOf(pr)] = 'Waiting'
+  for (const repo of repos) {
+    const merging = prs.filter(pr => pr.repo === repo)
+    if (merging.length && !(await ghEach('merge', merging)).length) continue
+    if (releasable(repo)) await releaseRepo(repo)
+  }
+}
+
+function openShip(keys, repo = null) {
+  openDialog({ type: 'ship', keys, repo })
+  loadPlans()
+}
+
+function setGroup(group) {
+  S.group = group
+  remember('group', group)
+  for (const key of [...S.seen]) if (key.startsWith('lane:') || key.startsWith('repo:')) S.seen.delete(key)
+  renderHeader()
+  renderBoard()
 }
 
 async function runVerb(id, verb, body = {}, done) {
@@ -918,6 +1109,7 @@ const ACTIONS = {
     renderHeader()
     renderBoard()
   },
+  group: ({ el }) => setGroup(el.dataset.group),
   login: async ({ el }) => {
     try {
       await api(`/api/login/${el.dataset.tool}`, {})
@@ -965,10 +1157,17 @@ const ACTIONS = {
   },
   ask: ({ k }) => openDialog({ type: 'ask', k, write: true }),
   // Every row button and menu item that acts on a PR: confirm first when the verb asks for it.
-  verb: ({ el, pr, k }) => VERBS[el.dataset.verb].confirm ? openDialog({ type: 'confirm', verb: el.dataset.verb, k }) : perform(el.dataset.verb, pr),
+  verb: ({ el, pr, k }) => {
+    const v = el.dataset.verb
+    return VERBS[v].ship ? openShip([k]) : VERBS[v].confirm ? openDialog({ type: 'confirm', verb: v, k }) : perform(v, pr)
+  },
   'dialog-go': ({ pr }) => { const v = S.dialog.verb; closeDialog(); return perform(v, pr) },
   'bulk-open': ({ lane }) => openDialog({ type: 'bulk', lane, keys: actionable(lane).map(keyOf) }),
   'bulk-go': () => runBulk(),
+  'merge-repo': ({ el }) => openDialog({ type: 'bulk', lane: 'ready', keys: mergeable(el.dataset.repo).map(keyOf) }),
+  'ship-open': ({ el }) => openShip(shippable(el.dataset.repo).map(keyOf)),
+  'release-open': ({ el }) => openShip([], el.dataset.repo),
+  'ship-go': () => ship(S.dialog),
   'dialog-close': () => closeDialog(),
   'dialog-backdrop': ({ el, ev }) => { if (ev.target === el) closeDialog() },
   quick: ({ k, el }) => { S.drafts[k] = el.dataset.text; S.dialog.write = el.dataset.writes === 'true'; renderDialog(); focusEnd('ask-input') },
@@ -1019,6 +1218,7 @@ document.addEventListener('keydown', ev => {
   }
   if (t.matches('input, textarea') || S.dialog || ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (ev.key === 'r') loadPrs()
+  if (ev.key === 'g') setGroup(S.group === 'repo' ? 'lane' : 'repo')
 })
 document.querySelectorAll('[data-icon]').forEach(el => { el.outerHTML = icon(el.dataset.icon) })
 document.addEventListener('visibilitychange', () => {

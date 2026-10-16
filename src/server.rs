@@ -11,12 +11,13 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
 use crate::github::{is_pr_url, Cache, PrAction, Snapshot};
 use crate::overview;
+use crate::release::{self, Releases};
 use crate::reviews;
 use crate::runs::{NewRun, RunError, Store};
 use crate::util::{first_line, open_terminal, sh, shq, Output};
@@ -29,6 +30,7 @@ const ORGANIC_CSS: &str = include_str!("../public/organic.css");
 struct App {
     store: Arc<Store>,
     prs: Arc<Cache>,
+    releases: Arc<Releases>,
     port: u16,
 }
 
@@ -188,6 +190,35 @@ async fn create_run(State(app): State<Shared>, Json(req): Json<NewRun>) -> Respo
     }
 }
 
+/// How each repo you have a PR in releases: its method, latest tag, the next one and what is unreleased.
+async fn release_plans(State(app): State<Shared>) -> Response {
+    let snap = match app.prs.recent().await {
+        Ok(snap) => snap,
+        Err(e) => return err(StatusCode::BAD_GATEWAY, e),
+    };
+    let repos: BTreeSet<String> = snap.mine.iter().map(|p| p.repo.clone()).collect();
+    Json(app.releases.plans(repos.into_iter().collect()).await).into_response()
+}
+
+#[derive(Deserialize)]
+struct ReleaseReq {
+    repo: String,
+}
+
+/// Cuts a release of one repo. It runs to the end even when the page goes away, so a release is never
+/// left half made. The repo need not have an open PR: the page releases right after merging the last one.
+async fn release_repo(State(app): State<Shared>, Json(req): Json<ReleaseReq>) -> Response {
+    if !release::is_repo(&req.repo) {
+        return err(StatusCode::BAD_REQUEST, "Not a repository name");
+    }
+    let releases = app.releases.clone();
+    match tokio::spawn(async move { releases.release(&req.repo).await }).await {
+        Ok(Ok(done)) => Json(done).into_response(),
+        Ok(Err(e)) => err(StatusCode::UNPROCESSABLE_ENTITY, e),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "Releasing crashed"),
+    }
+}
+
 async fn get_run(State(app): State<Shared>, Path(id): Path<String>) -> Response {
     app.store.get(&id).map(Json).into_response()
 }
@@ -236,7 +267,7 @@ async fn open_url(Json(req): Json<OpenReq>) -> Response {
 }
 
 pub fn router(store: Arc<Store>, prs: Arc<Cache>, port: u16) -> Router {
-    let app = Arc::new(App { store, prs, port });
+    let app = Arc::new(App { store, prs, releases: Arc::new(Releases::default()), port });
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
@@ -247,6 +278,8 @@ pub fn router(store: Arc<Store>, prs: Arc<Cache>, port: u16) -> Router {
         .route("/api/runs/{id}", get(get_run))
         .route("/api/runs/{id}/{verb}", post(run_verb))
         .route("/api/pr-action", post(pr_action))
+        .route("/api/releases", get(release_plans))
+        .route("/api/release", post(release_repo))
         .route("/api/login/{tool}", post(login))
         .route("/api/open", post(open_url))
         .layer(middleware::from_fn_with_state(app.clone(), guard))

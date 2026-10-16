@@ -7,6 +7,8 @@ A macOS app that lists your open GitHub pull requests, plus the ones waiting for
 PR Inbox sorts each PR into a lane: Ready to merge, Waiting on you, Fix CI, Changes requested, Update branch, Resolve conflicts, Needs approval, CI running, Drafts, and Close or revive. Each lane comes with the button for its next step.
 
 - Merge, update a branch, mark a draft ready or close a PR without leaving the app. These go through `gh`.
+- Group the list by status or by repository (press G). Each repository shows its next release and how many commits on its default branch are not released yet.
+- Merge & release squash-merges the Ready PRs of a repo, then cuts one release of it. A repo with a `release.yml` workflow runs that workflow. Any other repo gets a GitHub release one patch above its latest tag (v1.6.0 becomes v1.6.1), with generated notes. A repo with no releases only merges.
 - Hand a PR to Claude: fix CI, address review comments, rebase, review, or ask anything about it. A lane with several PRs can start one run per PR at once.
 - Reviews, questions and the triage run in Claude Code's plan mode and change nothing. Runs that change code use auto mode in a git worktree of their own (`<clone>/.claude/worktrees/pr-inbox-<number>`), so your checkout stays untouched. PR Inbox removes a clean worktree once its PR is merged or closed.
 - Every morning at 08:00, Claude writes a summary of where to start. "Triage with Claude" writes one on demand.
