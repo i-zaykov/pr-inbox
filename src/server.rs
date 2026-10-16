@@ -151,9 +151,21 @@ struct ActionReq {
     head_sha: Option<String>,
 }
 
-async fn pr_action(Json(req): Json<ActionReq>) -> Response {
+async fn pr_action(State(app): State<Shared>, Json(req): Json<ActionReq>) -> Response {
     if !is_pr_url(&req.url) {
         return err(StatusCode::BAD_REQUEST, "Not a pull request URL");
+    }
+    // An admin merge skips branch protection, so the server checks the PR as GitHub has it, not as the page saw it.
+    if req.action == PrAction::AdminMerge {
+        match app.prs.open_pr(&req.url).await {
+            Ok(Some(pr)) => {
+                if let Some(why) = pr.admin_merge_refusal() {
+                    return err(StatusCode::CONFLICT, why);
+                }
+            }
+            Ok(None) => return err(StatusCode::NOT_FOUND, "That PR is no longer open"),
+            Err(e) => return err(StatusCode::BAD_GATEWAY, e),
+        }
     }
     let args = match req.action.gh_args(&req.url, req.head_sha.as_deref()) {
         Ok(args) => args,

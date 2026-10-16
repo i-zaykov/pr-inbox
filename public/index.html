@@ -214,6 +214,11 @@ main { flex: 1 1 640px; min-width: 0; display: flex; flex-direction: column; gap
 .ship-repo { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--radius-md); background: var(--color-neutral-200); }
 .ship-repo .head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-weight: 700; }
 .ship-repo p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--color-neutral-800); }
+.ship-repo .check { align-items: flex-start; color: var(--color-neutral-900); }
+.ship-repo .check input { margin-top: 2px; flex: none; }
+.admin-warn { margin: 0; padding: 10px 14px; border-radius: var(--radius-md); background: var(--color-accent-100); color: var(--color-accent-800); font-size: 13px; line-height: 1.5; }
+.btn-admin { background: var(--color-accent-700); color: var(--color-neutral-100); }
+.btn-admin:hover:not(:disabled) { background: var(--color-accent-800); }
 .check { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--color-neutral-700); cursor: pointer; }
 .check input { accent-color: var(--color-accent); width: 16px; height: 16px; }
 
@@ -238,7 +243,7 @@ main { flex: 1 1 640px; min-width: 0; display: flex; flex-direction: column; gap
   <div class="top-row">
     <div class="brand"><h1>PR Inbox</h1><span class="who" id="who"></span></div>
     <span class="updated" id="updated"></span>
-    <button class="btn btn-secondary btn-dark" id="refresh-btn" data-act="refresh" title="Refresh (R)"><span data-icon="refresh"></span>Refresh</button>
+    <button class="btn btn-secondary btn-dark" id="refresh-btn" data-act="refresh" title="Refresh (⌘R)"><span data-icon="refresh"></span>Refresh</button>
     <button class="btn btn-primary" data-act="triage"><span data-icon="sparkle"></span>Triage with Claude</button>
   </div>
   <div class="filters" id="filters"></div>
@@ -264,6 +269,7 @@ const ICON = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
+  shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   rocket: '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
 }
 const icon = (name, size = 16, cls = '') => `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name]}</svg>`
@@ -297,6 +303,9 @@ const VERBS = {
     go: 'Merge' } },
   // Opens the Merge & release dialog, which says how the PR's repo releases before anything runs.
   ship: { menu: 'Merge & release…', mine: true, ship: true, when: pr => releasable(pr.repo) },
+  // Your admin rights merge past a missing approval or a branch behind its base. The server decides which
+  // PRs qualify (adminMergeable) and checks again before merging; the dialog spells out what it skips.
+  admin: { menu: 'Admin merge…', gh: 'admin-merge', mine: true, ship: true, when: pr => pr.adminMergeable, doing: 'Admin merging', did: 'Merged' },
   close: { menu: 'Close…', gh: 'close', mine: true, danger: true, doing: 'Closing', did: 'Closed', confirm: {
     title: pr => `Close ${short(pr)}?`,
     body: pr => `<p style="margin:0">Closes <b>${esc(pr.title)}</b> without merging. You can reopen it on GitHub.</p>`,
@@ -446,6 +455,21 @@ const releasable = repo => ['tag', 'workflow'].includes(S.plans[repo]?.method)
 // Your idle Ready PRs that Merge & release can take: in `repo`, or in every repo that releases.
 const shippable = repo => lanePrs('ready').filter(pr => (!repo || pr.repo === repo) && idle(pr) && can('ship', pr, true))
 const mergeable = repo => lanePrs('ready').filter(pr => pr.repo === repo && idle(pr) && can('merge', pr, true))
+// Why GitHub would not merge a PR yet, in a few words: what keeps it out of Merge & release.
+function blockers(pr) {
+  const out = []
+  if (pr.isDraft) out.push('draft')
+  if (pr.ci === 'fail' && pr.mergeState !== 'UNSTABLE') out.push('CI failing')
+  else if (pr.ci === 'running') out.push('CI running')
+  if (pr.mergeable === 'CONFLICTING') out.push('has conflicts')
+  if (pr.mergeState === 'BEHIND') out.push(`behind ${pr.base}`)
+  if (pr.review === 'REVIEW_REQUIRED') out.push('needs approval')
+  if (pr.review === 'CHANGES_REQUESTED') out.push('changes requested')
+  return out.length ? out.join(', ') : LANE[pr.lane].label.toLowerCase()
+}
+// Your open PRs in `repo` that a release would not take, because they are not Ready to merge.
+const leftOut = repo => S.data.mine.filter(pr => pr.repo === repo && pr.lane !== 'ready')
+const leftOutText = prs => prs.map(pr => `#${pr.number} (${pr.lane === 'ready' ? 'ready, not in this batch' : blockers(pr)}${pr.adminMergeable ? '; admin merge possible' : ''})`).join(', ')
 // What Claude said last in a run: its result, or the error it ended on.
 const lastSaid = r => r.events.findLast(e => e.kind === 'result' || e.kind === 'error')
 
@@ -573,7 +597,7 @@ function row(pr, lane, byRepo = false) {
   const menu = S.menu !== k ? '' : `<div class="menu" role="menu">
       ${link(pr.url, 'Open on GitHub')}${link(pr.url + '/files', 'View changes')}<div class="sep"></div>
       ${verbs(['fix', 'rebase', 'review', 'thermo', 'relevance'])}<div class="sep"></div>
-      ${verbs(['update', 'ready', 'merge', 'ship', 'close'])}
+      ${verbs(['update', 'ready', 'merge', 'ship', 'admin', 'close'])}
     </div>`
   let acts
   if (S.busy[k]) acts = `<span class="done-label" style="color:var(--color-neutral-700)"><span class="spin"></span>${esc(S.busy[k])}</span>`
@@ -586,7 +610,8 @@ function row(pr, lane, byRepo = false) {
     const relevance = can('relevance', pr, mine) && verb !== 'relevance' ? `<button class="btn btn-secondary" data-act="verb" data-verb="relevance" title="Claude checks it against today's ${esc(pr.base)}: closes it if it no longer matters, rescues it if it does">Still relevant?</button>` : ''
     const thermo = can('thermo', pr, mine) && review(pr).state !== 'pass' ? `<button class="btn btn-secondary" data-act="verb" data-verb="thermo" title="Run the thermo-nuclear review on this PR's branch">${icon('sparkle', 14)}Thermo review</button>` : ''
     const ship = verb === 'merge' && can('ship', pr, mine) ? `<button class="btn btn-secondary" data-act="verb" data-verb="ship" title="${esc(shipTip(pr.repo))}">${icon('rocket', 14)}Merge &amp; release</button>` : ''
-    acts = `${verb ? `<button class="btn ${cls}" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${ship}${relevance}${thermo}
+    const admin = can('admin', pr, mine) ? `<button class="btn btn-secondary" data-act="verb" data-verb="admin" title="Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.">${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}</button>` : ''
+    acts = `${verb ? `<button class="btn ${cls}" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${ship}${admin}${relevance}${thermo}
       <button class="btn btn-secondary btn-icon" data-act="ask" title="Ask Claude" aria-label="Ask Claude about ${esc(short(pr))}">${icon('chat')}</button>
       <button class="btn btn-ghost btn-icon" data-act="menu" title="More" aria-label="More actions" aria-expanded="${S.menu === k}">${icon('more')}</button>${menu}`
   }
@@ -671,7 +696,10 @@ function repoActions(repo) {
   const repoAttr = `data-repo="${esc(repo)}"`
   const out = merge.length > 1 ? [`<button class="btn btn-secondary" data-act="merge-repo" ${repoAttr}>Merge ${merge.length}</button>`] : []
   if (ship.length) out.push(`<button class="btn btn-primary" data-act="ship-open" ${repoAttr}>${icon('rocket', 14)}Merge &amp; release ${ship.length}</button>`)
-  else if (releasable(repo) && p.unreleased > 0) out.push(`<button class="btn btn-secondary" data-act="release-open" ${repoAttr}>${icon('rocket', 14)}Release${p.next ? ' ' + esc(p.next) : ''}</button>`)
+  else if (releasable(repo) && p.unreleased > 0) {
+    const tip = `Releases the ${plural(p.unreleased, 'commit')} already on ${p.branch}. It merges nothing: open PRs join once they are Ready to merge.`
+    out.push(`<button class="btn btn-secondary" data-act="release-open" ${repoAttr} title="${esc(tip)}">${icon('rocket', 14)}Release${p.next ? ' ' + esc(p.next) : ''}</button>`)
+  }
   return out.join('')
 }
 
@@ -687,7 +715,9 @@ function releaseLine(repo) {
     p.method === 'tag' ? `Next release ${ver(p.next || '?')}, latest ${ver(p.latest)}` : `Releases with its ${ver('release.yml')} workflow${p.latest ? `, latest ${ver(p.latest)}` : ''}`,
     p.unreleased ? `<span class="pending">${plural(p.unreleased, 'commit')} on ${esc(p.branch)} not released yet</span>` : p.unreleased === 0 ? `${esc(p.branch)} is fully released` : '',
   ].filter(Boolean)
-  return `<div class="repo-release">${icon('tag', 14)}${parts.map(part => `<span>${part}</span>`).join('<span aria-hidden="true">·</span>')}</div>`
+  const out = releasable(repo) ? leftOut(repo) : []
+  const left = out.length ? `<div class="repo-release">Not in the next release: ${esc(leftOutText(out))}</div>` : ''
+  return `<div class="repo-release">${icon('tag', 14)}${parts.map(part => `<span>${part}</span>`).join('<span aria-hidden="true">·</span>')}</div>${left}`
 }
 
 // ---------- Claude panel ----------
@@ -820,25 +850,31 @@ function drawDialog() {
     const c = VERBS[d.verb].confirm
     $('#dialog').innerHTML = frame(c.title(pr), c.body(pr), `${cancel}<button class="btn btn-primary" data-act="dialog-go">${c.go}</button>`)
   } else if (d.type === 'ship') {
-    // Keys were fixed when the dialog opened; `d.repo` alone is a release with nothing to merge.
-    const prs = d.keys.map(findPr).filter(Boolean)
-    const repos = d.repo ? [d.repo] : [...new Set(prs.map(pr => pr.repo))]
+    // Keys were fixed when the dialog opened; `d.admin` holds the PRs you ticked for an admin merge, and
+    // `d.repo` with nothing to merge is a plain release.
+    const { prs, forced, repos } = shipSet(d)
+    const merges = prs.length + forced.length
     const checking = repos.some(r => !S.plans[r] && !S.planErrors[r])
     const releasing = repos.filter(releasable)
     const groups = repos.map(repo => {
       const merging = prs.filter(pr => pr.repo === repo)
       const p = S.plans[repo]
       const head = p?.method === 'tag' ? `<span class="ver">${esc(p.latest)} → ${esc(p.next || '?')}</span>` : p?.latest ? `<span class="ver">latest ${esc(p.latest)}</span>` : ''
+      const admin = adminCandidates(repo, d).map(pr => `<label class="check"><input type="checkbox" data-act="ship-admin" data-key="${esc(keyOf(pr))}"${d.admin.includes(keyOf(pr)) ? ' checked' : ''}>
+          <span>Admin-merge #${pr.number} ${esc(pr.title)} <span>(${esc(blockers(pr))})</span></span></label>`).join('')
       return `<div class="ship-repo"><div class="head">${esc(repoName(repo))}${head}</div>
-        ${merging.length ? `<ul>${merging.map(pr => `<li>#${pr.number} <span>${esc(pr.title)}</span></li>`).join('')}</ul>` : ''}
-        <p>${shipNote(repo, merging.length > 0)}</p></div>`
+        ${merging.length ? `<ul>${merging.map(pr => `<li>#${pr.number} <span>${esc(pr.title)}</span></li>`).join('')}</ul>` : ''}${admin}
+        <p>${shipNote(repo, merges > 0 && (merging.length > 0 || forced.some(pr => pr.repo === repo)))}</p>${outNote(repo, merging, d)}</div>`
     }).join('')
-    const title = !prs.length ? `Release ${repoName(d.repo)}${S.plans[d.repo]?.next ? ' ' + S.plans[d.repo].next : ''}?`
-      : prs.length === 1 ? `Merge and release ${short(prs[0])}?` : `Merge ${prs.length} and release ${plural(releasing.length, 'repo')}?`
-    const how = prs.length ? '<p style="margin:0">Squash-merges each PR, pinned to the commit shown here. A repo releases after its merges, and only when at least one of them went through.</p>' : ''
-    const go = checking ? 'Checking releases…' : prs.length ? 'Merge &amp; release' : 'Release'
-    $('#dialog').innerHTML = frame(title, `<div class="ship-list">${groups}</div>${how}`,
-      `${cancel}<button class="btn btn-primary" data-act="ship-go" ${checking || !releasing.length ? 'disabled' : ''}>${go}</button>`)
+    const word = forced.length ? 'Admin-merge' : 'Merge'
+    const andRelease = releasing.length ? ' and release' : ''
+    const title = !merges ? `Release ${repoName(d.repo)}${S.plans[d.repo]?.next ? ' ' + S.plans[d.repo].next : ''}?`
+      : merges === 1 ? `${word}${andRelease} ${short(prs[0] || forced[0])}?` : `${word} ${merges}${releasing.length ? ` and release ${plural(releasing.length, 'repo')}` : ''}?`
+    const how = merges ? '<p style="margin:0">Squash-merges each PR, pinned to the commit shown here. A repo releases after its merges, and only when at least one of them went through.</p>' : ''
+    const warn = forced.length ? `<p class="admin-warn"><b>Admin merge skips branch protection</b> for ${forced.map(pr => '#' + pr.number).join(', ')}. Nobody has approved ${forced.length === 1 ? 'it' : 'them'} yet, and a PR behind its base merges without CI having run on today's base. GitHub still refuses in a repo that enforces its rules for admins.</p>` : ''
+    const go = checking ? 'Checking releases…' : `${forced.length ? 'Admin merge' : merges ? 'Merge' : 'Release'}${merges && releasing.length ? ' &amp; release' : ''}`
+    $('#dialog').innerHTML = frame(title, `<div class="ship-list">${groups}</div>${how}${warn}`,
+      `${cancel}<button class="btn ${forced.length ? 'btn-admin' : 'btn-primary'}" data-act="ship-go" ${checking || (!merges && !releasing.length) ? 'disabled' : ''}>${go}</button>`)
   } else if (d.type === 'bulk') {
     const lane = LANE[d.lane]
     const { verb, label } = lane.bulk
@@ -863,6 +899,26 @@ function shipNote(repo, merging) {
   const since = p.unreleased ? `${plural(p.unreleased, 'commit')} on ${branch} since ${esc(p.latest)}` : ''
   if (merging) return `Then PR Inbox ${step}.${since ? ` The release also takes the ${since}, not released yet.` : ''}`
   return since ? `PR Inbox ${step}, for the ${since}.` : `Nothing new on ${branch} since ${esc(p.latest)}.`
+}
+
+// The repo's open PRs that stay out of this release, and why, so a release never looks like it merges them.
+function outNote(repo, merging, d) {
+  if (!releasable(repo)) return ''
+  const offered = adminCandidates(repo, d)
+  const out = leftOut(repo).filter(pr => !offered.includes(pr)).concat(lanePrs('ready').filter(pr => pr.repo === repo && !merging.includes(pr)))
+  return out.length ? `<p>Not included: ${esc(leftOutText(out))}.</p>` : ''
+}
+
+// Your idle PRs in `repo` the dialog offers for an admin merge: the ones the server marked as held back
+// only by their approval or by being behind, and not already merging the normal way.
+const adminCandidates = (repo, d) => S.data.mine.filter(pr => pr.repo === repo && pr.adminMergeable && idle(pr) && !d.keys.includes(keyOf(pr)))
+
+// What a Merge & release dialog takes: PRs merging normally, PRs ticked for an admin merge, and their repos.
+function shipSet(d) {
+  const prs = d.keys.map(findPr).filter(Boolean)
+  const forced = d.admin.map(findPr).filter(pr => pr?.adminMergeable)
+  const repos = [...new Set([d.repo, ...prs.map(pr => pr.repo), ...forced.map(pr => pr.repo)].filter(Boolean))]
+  return { prs, forced, repos }
 }
 
 function openDialog(d) {
@@ -1069,20 +1125,23 @@ async function releaseRepo(repo) {
 }
 
 // Merge & release: per repo, merge its PRs one at a time, then release it once if any of them merged.
+// Normal merges go first: in a repo that wants branches up to date, the first merge leaves the rest behind,
+// and only the admin merges get past that.
 async function ship(d) {
-  const prs = d.keys.map(findPr).filter(Boolean)
-  const repos = d.repo ? [d.repo] : [...new Set(prs.map(pr => pr.repo))]
+  const { prs, forced, repos } = shipSet(d)
   closeDialog()
-  for (const pr of prs) S.busy[keyOf(pr)] = 'Waiting'
+  for (const pr of [...prs, ...forced]) S.busy[keyOf(pr)] = 'Waiting'
   for (const repo of repos) {
-    const merging = prs.filter(pr => pr.repo === repo)
-    if (merging.length && !(await ghEach('merge', merging)).length) continue
+    const normal = prs.filter(pr => pr.repo === repo)
+    const admin = forced.filter(pr => pr.repo === repo)
+    const merged = [...(normal.length ? await ghEach('merge', normal) : []), ...(admin.length ? await ghEach('admin', admin) : [])]
+    if (normal.length + admin.length && !merged.length) continue
     if (releasable(repo)) await releaseRepo(repo)
   }
 }
 
-function openShip(keys, repo = null) {
-  openDialog({ type: 'ship', keys, repo })
+function openShip(keys, repo = null, admin = []) {
+  openDialog({ type: 'ship', keys, repo, admin })
   loadPlans()
 }
 
@@ -1159,6 +1218,7 @@ const ACTIONS = {
   // Every row button and menu item that acts on a PR: confirm first when the verb asks for it.
   verb: ({ el, pr, k }) => {
     const v = el.dataset.verb
+    if (v === 'admin') return openShip([], pr.repo, [k])
     return VERBS[v].ship ? openShip([k]) : VERBS[v].confirm ? openDialog({ type: 'confirm', verb: v, k }) : perform(v, pr)
   },
   'dialog-go': ({ pr }) => { const v = S.dialog.verb; closeDialog(); return perform(v, pr) },
@@ -1168,6 +1228,11 @@ const ACTIONS = {
   'ship-open': ({ el }) => openShip(shippable(el.dataset.repo).map(keyOf)),
   'release-open': ({ el }) => openShip([], el.dataset.repo),
   'ship-go': () => ship(S.dialog),
+  'ship-admin': ({ el }) => {
+    const k = el.dataset.key
+    S.dialog.admin = el.checked ? [...new Set([...S.dialog.admin, k])] : S.dialog.admin.filter(x => x !== k)
+    renderDialog()
+  },
   'dialog-close': () => closeDialog(),
   'dialog-backdrop': ({ el, ev }) => { if (ev.target === el) closeDialog() },
   quick: ({ k, el }) => { S.drafts[k] = el.dataset.text; S.dialog.write = el.dataset.writes === 'true'; renderDialog(); focusEnd('ask-input') },
@@ -1210,6 +1275,13 @@ document.addEventListener('keydown', ev => {
   if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
     if (t.dataset.act === 'draft') { ev.preventDefault(); $('[data-act="ask-send"]')?.click() }
     if (t.dataset.act === 'reply-draft') { ev.preventDefault(); ACTIONS['reply-send']({ run: t.dataset.run }) }
+    return
+  }
+  // ⌘R refreshes the PRs and runs in place, from anywhere on the page; ⇧⌘R still reloads the whole page.
+  if ((ev.metaKey || ev.ctrlKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'r') {
+    ev.preventDefault()
+    loadPrs()
+    loadRuns()
     return
   }
   if (ev.key === 'Escape') {

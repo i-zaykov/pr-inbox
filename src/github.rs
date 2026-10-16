@@ -112,6 +112,10 @@ pub struct Pr {
     pub lane: Lane,
     /// A run may change code and push on this PR: `write_refusal` has nothing against it.
     pub writable: bool,
+    /// You are an admin of the repo, so you can merge past its branch protection.
+    pub can_admin: bool,
+    /// An admin merge may take this PR: `admin_merge_refusal` has nothing against it.
+    pub admin_mergeable: bool,
 }
 
 impl Pr {
@@ -125,6 +129,31 @@ impl Pr {
             if !safe_ref(name) {
                 return Some(format!("The {what} name '{name}' has characters PR Inbox will not hand to an auto-mode run."));
             }
+        }
+        None
+    }
+
+    /// Why an admin merge, which skips the required approval and the up-to-date rule, must not take this
+    /// PR. It is only for your own PR whose checks all passed, with no conflicts and no changes requested,
+    /// held back by nothing but a missing approval or a branch behind its base.
+    pub fn admin_merge_refusal(&self) -> Option<&'static str> {
+        if !self.can_admin {
+            return Some("You are not an admin of this repo");
+        }
+        if !matches!(self.lane, Lane::Behind | Lane::Review) {
+            return Some("Only a PR held back by its approval or by being behind its base can be admin-merged");
+        }
+        if self.ci != Ci::Pass {
+            return Some("Not all of its checks have passed");
+        }
+        if self.mergeable != Mergeable::Mergeable {
+            return Some("It has conflicts, or GitHub has not worked out whether it can merge");
+        }
+        if self.review == Some(ReviewDecision::ChangesRequested) {
+            return Some("A reviewer asked for changes");
+        }
+        if self.merge_state != MergeState::Behind && self.review != Some(ReviewDecision::ReviewRequired) {
+            return Some("Another branch rule blocks it, not its approval or being behind");
         }
         None
     }
@@ -153,7 +182,7 @@ const FIELDS: &str = r#"
   number title url isDraft isCrossRepository createdAt updatedAt additions deletions changedFiles
   mergeable mergeStateStatus reviewDecision headRefName headRefOid baseRefName
   author { login }
-  repository { nameWithOwner name isArchived }
+  repository { nameWithOwner name isArchived viewerPermission }
   reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
   reviewThreads(first: 100) { nodes { isResolved } }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 100) { nodes {
@@ -278,6 +307,8 @@ fn to_pr(n: &Value) -> Pr {
         failing,
         lane: Lane::default(),
         writable: false,
+        can_admin: text(n, "/repository/viewerPermission") == "ADMIN",
+        admin_mergeable: false,
     };
     pr.writable = pr.write_refusal().is_none();
     pr
@@ -335,6 +366,7 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
     let mut mine: Vec<Pr> = nodes("/data/viewer/pullRequests/nodes").iter().filter(live).map(to_pr).collect();
     for pr in &mut mine {
         pr.lane = classify(pr, &stale_cutoff, &fresh_cutoff);
+        pr.admin_mergeable = pr.admin_merge_refusal().is_none();
     }
     let mut seen: HashSet<String> = mine.iter().map(|p| p.url.clone()).collect();
     let waiting: Vec<Pr> = [nodes("/data/reviews/nodes"), nodes("/data/assigned/nodes")]
@@ -426,10 +458,13 @@ pub fn is_full_sha(s: &str) -> bool {
 }
 
 /// The gh actions the page can run on a PR.
-#[derive(Clone, Copy, Deserialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PrAction {
     Merge,
+    /// A merge with your admin rights, past the required approval and the up-to-date rule.
+    #[serde(rename = "admin-merge")]
+    AdminMerge,
     Update,
     Ready,
     Close,
@@ -440,7 +475,8 @@ impl PrAction {
     /// A merge without it is refused here rather than run unpinned.
     pub fn gh_args<'a>(self, url: &'a str, head_sha: Option<&'a str>) -> Result<Vec<&'a str>, String> {
         Ok(match self {
-            PrAction::Merge => match head_sha.filter(|s| is_full_sha(s)) {
+            PrAction::Merge | PrAction::AdminMerge => match head_sha.filter(|s| is_full_sha(s)) {
+                Some(sha) if self == PrAction::AdminMerge => vec!["pr", "merge", url, "--squash", "--admin", "--match-head-commit", sha],
                 Some(sha) => vec!["pr", "merge", url, "--squash", "--match-head-commit", sha],
                 None => return Err("A merge needs the PR's full head commit id".into()),
             },
@@ -545,6 +581,47 @@ mod tests {
         assert!(PrAction::Merge.gh_args("u", Some("abc")).is_err());
         assert!(PrAction::Merge.gh_args("u", None).is_err());
         assert!(PrAction::Update.gh_args("u", None).is_ok());
+        assert!(!PrAction::Merge.gh_args("u", Some(&sha)).unwrap().contains(&"--admin"));
+        assert_eq!(PrAction::AdminMerge.gh_args("u", Some(&sha)).unwrap(), ["pr", "merge", "u", "--squash", "--admin", "--match-head-commit", sha.as_str()]);
+        assert!(PrAction::AdminMerge.gh_args("u", None).is_err());
+        assert!(matches!(serde_json::from_value(json!("admin-merge")), Ok(PrAction::AdminMerge)));
+    }
+
+    #[test]
+    fn only_a_green_pr_held_back_by_approval_or_being_behind_can_be_admin_merged() {
+        let held = || Pr {
+            can_admin: true,
+            lane: Lane::Behind,
+            ci: Ci::Pass,
+            mergeable: Mergeable::Mergeable,
+            merge_state: MergeState::Behind,
+            review: Some(ReviewDecision::ReviewRequired),
+            ..Default::default()
+        };
+        assert_eq!(held().admin_merge_refusal(), None);
+        assert_eq!(Pr { lane: Lane::Review, merge_state: MergeState::Blocked, ..held() }.admin_merge_refusal(), None);
+        assert_eq!(Pr { review: None, ..held() }.admin_merge_refusal(), None);
+        let refused = [
+            ("not an admin", Pr { can_admin: false, ..held() }),
+            ("ready anyway", Pr { lane: Lane::Ready, ..held() }),
+            ("someone else's", Pr { lane: Lane::Waiting, ..held() }),
+            ("checks running", Pr { ci: Ci::Running, ..held() }),
+            ("no checks", Pr { ci: Ci::None, ..held() }),
+            ("optional check failing", Pr { ci: Ci::Fail, ..held() }),
+            ("mergeability unknown", Pr { mergeable: Mergeable::Unknown, ..held() }),
+            ("changes requested", Pr { review: Some(ReviewDecision::ChangesRequested), ..held() }),
+            ("blocked by another rule", Pr { lane: Lane::Review, merge_state: MergeState::Blocked, review: None, ..held() }),
+        ];
+        for (name, pr) in refused {
+            assert!(pr.admin_merge_refusal().is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn admin_rights_come_from_the_viewers_repo_permission() {
+        let pr = |perm: &str| to_pr(&json!({ "url": "u", "repository": { "viewerPermission": perm } }));
+        assert!(pr("ADMIN").can_admin);
+        assert!(!pr("MAINTAIN").can_admin);
     }
 
     #[test]
