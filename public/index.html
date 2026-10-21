@@ -52,7 +52,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
 ::selection { background: oklch(0.94 0.04 155 / .3); }
-code, .mono { font-family: var(--mono); font-size: 12px; }
+code { font-family: var(--mono); font-size: 12px; }
 .sub { color: var(--sub); }
 .dim { color: var(--dim); }
 .grow { flex: 1 1 auto; }
@@ -307,11 +307,9 @@ const ICON = {
   refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
   sparkle: '<path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z"/>',
   alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
-  chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
-  tag: '<path d="M12.6 2.6A2 2 0 0 0 11.2 2H4a2 2 0 0 0-2 2v7.2a2 2 0 0 0 .6 1.4l8.7 8.7a2.4 2.4 0 0 0 3.4 0l6.6-6.6a2.4 2.4 0 0 0 0-3.4z"/><circle cx="7.5" cy="7.5" r=".5" fill="currentColor"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   rocket: '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
 }
@@ -388,9 +386,9 @@ const LANE = Object.fromEntries(LANES.map(l => [l.id, l]))
 const KIND = { fix: ['Fixing CI', 'Fix CI'], rebase: ['Rebasing', 'Rebase'], review: ['Review started', 'Review'], thermo: ['Reviewing code', 'Thermo review'], resolve: ['Resolving, then reviewing', 'Resolve & review'],
   relevance: ['Checking relevance', 'Relevance check'], ask: ['Claude working', 'Claude request'], task: ['Claude working', 'Claude request'] }
 const RUN_DOT = { done: 'var(--ok)', running: 'var(--info)', queued: 'var(--info)', failed: 'var(--bad)', stopped: 'var(--mute)', interrupted: 'var(--mute)' }
-// Retry starts these kinds fresh from the PR, so a run whose directory is gone gets today's worktree; a request
-// in your own words resumes its run instead.
-const FRESH = ['fix', 'rebase', 'review', 'thermo', 'relevance', 'resolve']
+// Retry starts a run of the same kind fresh from the PR, so a run whose directory is gone gets today's worktree.
+// A request in your own words has no kind to start again from, so it resumes its run.
+const resumes = r => r.kind === 'ask' || r.kind === 'task'
 
 // Per-viewer preferences; storage can be missing (private window) and the page works without it.
 const recall = key => { try { return localStorage.getItem(`pr-inbox:${key}`) } catch { return null } }
@@ -529,12 +527,6 @@ const leftOut = repo => S.data.mine.filter(pr => pr.repo === repo && pr.lane !==
 const leftOutText = prs => prs.map(pr => `#${pr.number} (${pr.lane === 'ready' ? 'ready, not in this batch' : blockers(pr)}${pr.adminMergeable ? '; admin merge possible' : ''})`).join(', ')
 // What Claude said last in a run: its result, or the error it ended on.
 const lastSaid = r => r.events.findLast(e => e.kind === 'result' || e.kind === 'error')
-// That, in a few words: a run that could not start in a missing directory names the directory.
-function reason(r) {
-  const said = lastSaid(r)?.text || ''
-  const gone = said.match(/directory is gone \(([^)]+)\)/)
-  return gone ? `${tilde(gone[1])} missing` : firstLine(said)
-}
 
 // ---------- header and notices ----------
 
@@ -631,8 +623,10 @@ function tags(pr, lane, byRepo) {
   if (pr.isDraft) tag('Draft', 'tag-mute')
   if (pr.isCrossRepo) tag('From a fork', 'tag-mute', 'Claude runs that change code are off for fork PRs')
   // A thermo-nuclear review shows once one is recorded; the runs strip says when one failed to run.
-  const { state, tip } = lane !== 'waiting' ? review(pr) : { state: 'none' }
-  if (state !== 'none') tag(...{ outdated: ['Review outdated', 'tag-mute'], pass: ['✓ Review passed', 'tag-ok'], fail: ['✕ Review failed', 'tag-bad'] }[state], tip)
+  if (lane !== 'waiting') {
+    const { state, tip } = review(pr)
+    if (state !== 'none') tag(...{ outdated: ['Review outdated', 'tag-mute'], pass: ['✓ Review passed', 'tag-ok'], fail: ['✕ Review failed', 'tag-bad'] }[state], tip)
+  }
   return out.join('')
 }
 
@@ -674,8 +668,7 @@ function row(pr, lane, byRepo = false) {
     let [label, verb] = lane.action || []
     if (verb && !can(verb, pr, mine)) verb = null
     // On your own PRs the thermo-nuclear review stays one click away until the current commit has passed it.
-    const thermo = can('thermo', pr, mine) && review(pr).state !== 'pass' ? `<button class="btn" data-act="verb" data-verb="thermo" title="Run the thermo-nuclear review on this PR's branch">${icon('sparkle', 14)}Thermo review</button>` : ''
-    acts = `${verb ? `<button class="btn btn-primary" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${second(pr, verb, mine)}${thermo}
+    acts = `${verb ? `<button class="btn btn-primary" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${extras(pr, verb, mine)}
       <button class="btn btn-ghost btn-icon" data-act="menu" title="More" aria-label="More actions" aria-expanded="${S.menu === k}">${icon('more')}</button>${menu}`
   }
   const info = [
@@ -697,30 +690,33 @@ function row(pr, lane, byRepo = false) {
       </div>
       <div class="pr-acts">${acts}</div>
     </div>
-    ${strip(pr, run)}
+    ${strip(pr)}
   </article>`
 }
 
-// The one button beside the lane's own action: merge and release, resolving conflicts with a review after,
-// an admin merge, or the relevance check, whichever this PR can take, else its GitHub page. Every other
-// action is in the row's menu.
-function second(pr, verb, mine) {
-  if (verb === 'merge' && can('ship', pr, mine)) return `<button class="btn" data-act="verb" data-verb="ship" title="${esc(shipTip(pr.repo))}">${icon('rocket', 14)}Merge &amp; release</button>`
-  if (can('resolve', pr, mine)) return `<button class="btn" data-act="verb" data-verb="resolve" title="One Claude run: merge ${esc(pr.base)} and resolve the conflicts, push, then run the thermo-nuclear review on the result. It stops before the review if the conflicts need you.">${icon('sparkle', 14)}Resolve &amp; review</button>`
-  if (can('admin', pr, mine)) return `<button class="btn" data-act="verb" data-verb="admin" title="Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.">${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}</button>`
-  if (verb !== 'relevance' && can('relevance', pr, mine)) return `<button class="btn" data-act="verb" data-verb="relevance" title="Claude checks it against today's ${esc(pr.base)}: closes it if it no longer matters, rescues it if it does">Still relevant?</button>`
-  return `<a class="btn" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open on GitHub</a>`
+// The buttons beside the lane's own action: one of merge and release, resolve and review, an admin merge or the
+// relevance check, whichever this PR can take (else its GitHub page), then the thermo-nuclear review until the
+// current commit has passed it. Every other action is in the row's menu.
+function extras(pr, verb, mine) {
+  const button = (v, body, tip) => `<button class="btn" data-act="verb" data-verb="${v}" title="${esc(tip)}">${body}</button>`
+  const one = verb === 'merge' && can('ship', pr, mine) ? button('ship', `${icon('rocket', 14)}Merge &amp; release`, shipTip(pr.repo))
+    : can('resolve', pr, mine) ? button('resolve', `${icon('sparkle', 14)}Resolve &amp; review`, `One Claude run: merge ${pr.base} and resolve the conflicts, push, then run the thermo-nuclear review on the result. It stops before the review if the conflicts need you.`)
+    : can('admin', pr, mine) ? button('admin', `${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}`, 'Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.')
+    : verb !== 'relevance' && can('relevance', pr, mine) ? button('relevance', 'Still relevant?', `Claude checks it against today's ${pr.base}: closes it if it no longer matters, rescues it if it does`)
+    : `<a class="btn" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open on GitHub</a>`
+  const thermo = can('thermo', pr, mine) && review(pr).state !== 'pass' ? button('thermo', `${icon('sparkle', 14)}Thermo review`, "Run the thermo-nuclear review on this PR's branch") : ''
+  return one + thermo
 }
 
 const runName = r => KIND[r.kind]?.[1] || 'Claude run'
 
 // The PR's Claude runs under its row, and only this PR's: folded, the newest on one line with how it ended;
 // unfolded, a card per run with its output, log and actions. Retry starts again each kind whose last run failed.
-function strip(pr, run) {
+function strip(pr) {
   const runs = runsOf(pr)
   if (!runs.length) return '<div class="strip"><span class="dim">No runs yet</span></div>'
   const open = !!S.runsOpen[keyOf(pr)]
-  const again = !run && idle(pr) ? retryable(pr) : []
+  const again = idle(pr) ? retryable(pr) : []
   const retry = again.length ? `<button class="btn btn-sm btn-ghost" data-act="retry-all" title="Start ${esc(again.map(runName).join(', '))} again">${again.length > 1 ? 'Retry all' : 'Retry'}</button>` : ''
   const toggle = `<button class="btn btn-sm btn-ghost strip-toggle" data-act="runs-toggle" aria-expanded="${open}">${icon('chevron', 14)}<b>${plural(runs.length, 'run')}</b></button>`
   if (open) return `<div class="strip">${toggle}${retry}</div><div class="strip-runs">${runs.map(runCard).join('')}</div>`
@@ -813,7 +809,6 @@ function releaseInfo(repo) {
 // Under a PR the card names the run's kind; the triage card names the run.
 function runCard(r) {
   const id = esc(r.id)
-  drawn[r.id] = cardSig(r)
   const open = S.openRun === r.id
   // Claude Code reports an API-price estimate on every run; it is only money spent when the run used an API key.
   const billed = r.costUsd && r.apiKeySource && r.apiKeySource !== 'none' ? `$${r.costUsd.toFixed(2)} API` : ''
@@ -852,7 +847,7 @@ function runCard(r) {
       ${reply}${log}
     </div>`
   }
-  return `<div class="run${open ? ' open' : ''}${active(r) ? ' working' : ''}${S.flash === r.id ? ' flash' : ''}" id="run-${id}" data-enter="run:${id}" style="--dot:${RUN_DOT[r.status] || 'var(--mute)'}">
+  return `<div class="run${open ? ' open' : ''}${active(r) ? ' working' : ''}${S.flash === r.id ? ' flash' : ''}" id="run-${id}" data-enter="run:${id}" data-sig="${esc(cardSig(r))}" style="--dot:${RUN_DOT[r.status] || 'var(--mute)'}">
     <button class="run-toggle" data-act="run-toggle" data-run="${id}" aria-expanded="${open}">
       <div class="run-top"><span class="dot"></span><span class="run-title">${esc(r.prUrl ? runName(r) : r.title)}</span>${icon('chevron', 14, 'chev')}</div>
       <div class="run-meta">${esc(meta)}</div>${preview}
@@ -860,10 +855,10 @@ function runCard(r) {
   </div>`
 }
 
-// What decides whether a card needs drawing again; an active run also redraws every 5 s for its clock.
+// What decides whether a card needs drawing again; each card carries the one it was drawn with. An active run
+// also redraws every 5 s for its clock.
 const cardSig = r => JSON.stringify([r.status, r.updatedAt, r.stopRequested, S.openRun === r.id, !!S.logOpen[r.id], S.fullLog[r.id]?.at(-1)?.at,
   !!S.replyOpen[r.id], S.flash === r.id, active(r) ? Math.floor(Date.now() / 5000) : 0])
-const drawn = {}
 
 // Redraws only the cards on screen that changed, keeping the scroll of their output and log, so reading or
 // selecting text in one run is not reset while another run streams.
@@ -871,7 +866,7 @@ function renderRuns() {
   keepFocus(() => {
     for (const r of S.runs) {
       const el = document.getElementById(`run-${r.id}`)
-      if (!el || drawn[r.id] === cardSig(r)) continue
+      if (!el || el.dataset.sig === cardSig(r)) continue
       const scroll = saveScroll(el)
       el.outerHTML = runCard(r)
       const card = document.getElementById(`run-${r.id}`)
@@ -1007,7 +1002,7 @@ function openDialog(d) {
 
 function closeDialog() { S.dialog = null; renderDialog() }
 
-function renderAll() { renderHeader(); renderNotice(); renderBoard(); renderRuns(); renderDialog() }
+function renderAll() { renderHeader(); renderNotice(); renderBoard(); renderDialog() }
 
 // ---------- data ----------
 
@@ -1169,8 +1164,8 @@ const perform = (v, pr) => VERBS[v].gh ? ghEach(v, [pr]) : startRun(VERBS[v].run
 async function retryAll(pr) {
   let n = 0
   for (const r of retryable(pr)) {
-    if (FRESH.includes(r.kind)) n += (await startEach(r.kind, [pr])).length
-    else { await runVerb(r.id, 'retry'); n++ }
+    if (resumes(r)) { await runVerb(r.id, 'retry'); n++ }
+    else n += (await startEach(r.kind, [pr])).length
   }
   if (n) toast(`Started ${plural(n, 'Claude run')} on ${short(pr)}`)
 }

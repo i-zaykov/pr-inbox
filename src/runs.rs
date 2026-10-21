@@ -243,14 +243,19 @@ fn facts(pr: &Pr) -> String {
     lines.join("\n")
 }
 
-/// How a thermo run records its verdict. The prompt spells the command out because the review skill that
-/// loads may be a copy without PR Inbox's record step (the claude.ai synced one shadows the local one).
-fn record_review_step(pr: &Pr) -> String {
+/// How every run that does a thermo-nuclear review goes on once the skill is named: compare against the PR's
+/// base, push the fixes, record the verdict, and end on the breakdown. The prompt spells the record command out
+/// because the review skill that loads may be a copy without PR Inbox's record step (the claude.ai synced one
+/// shadows the local one).
+fn thermo_steps(pr: &Pr) -> String {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "pr-inbox".into());
     format!(
-        "Then record the verdict for the pushed commit, whether or not the skill mentions this step. PASS when no blocker and no confirmed bug is left on the pushed code; FAIL otherwise, and also FAIL when CI is still red. Run git status first and never record PASS with uncommitted fixes:\n\n\
+        "This PR targets '{base}', so review its changes against origin/'{base}', not the repo's default branch. Apply the fixes it calls for, commit and push them. \
+         Then record the verdict for the pushed commit, whether or not the skill mentions this step. PASS when no blocker and no confirmed bug is left on the pushed code; FAIL otherwise, and also FAIL when CI is still red. Run git status first and never record PASS with uncommitted fixes:\n\n\
          '{exe}' record-review --repo '{repo}' --branch '{head}' --sha \"$(git rev-parse HEAD)\" --verdict pass --summary \"<one line: the top remaining blocker prefixed 'thermo:' or 'bug:', or 'no blockers'>\"\n\n\
-         Use --verdict fail for FAIL. Record again if you push after that.",
+         Use --verdict fail for FAIL. Record again if you push after that.\n\n\
+         Make the breakdown your last message: leave no background task running.",
+        base = pr.base,
         repo = pr.repo,
         head = pr.head,
     )
@@ -314,8 +319,8 @@ fn build_prompt(kind: Kind, pr: &Pr, note: &str, rules: &str) -> String {
 Start your final report with one line: the verdict and what you did (closed it, or rescued and pushed it).
 
 {rules}", url = pr.url),
-        Kind::Thermo => format!("Run /thermo-nuclear-code-quality-review on this pull request's branch.\n\n{facts}\n\nThis PR targets '{base}', so review its changes against origin/'{base}', not the repo's default branch. Apply the fixes it calls for, commit and push them. {record}\n\nMake the breakdown your last message: leave no background task running.\n\n{rules}", record = record_review_step(pr)),
-        Kind::Resolve => format!("Resolve this pull request's conflicts with '{base}', then run /thermo-nuclear-code-quality-review on the result.\n\n{facts}\n\n1. Merge origin/'{base}' into the branch and resolve the conflicts so the PR keeps its intent. Run the repo's checks and push. If you cannot resolve them with confidence, stop here and say why: do not start the review.\n2. Run /thermo-nuclear-code-quality-review on the pushed branch, reviewing its changes against origin/'{base}'. Apply the fixes it calls for, commit and push them. {record}\n\nMake the breakdown your last message: leave no background task running.\n\n{rules}", record = record_review_step(pr)),
+        Kind::Thermo => format!("Run /thermo-nuclear-code-quality-review on this pull request's branch.\n\n{facts}\n\n{steps}\n\n{rules}", steps = thermo_steps(pr)),
+        Kind::Resolve => format!("Resolve this pull request's conflicts with '{base}', then run /thermo-nuclear-code-quality-review on the result.\n\n{facts}\n\n1. Merge origin/'{base}' into the branch and resolve the conflicts so the PR keeps its intent. Run the repo's checks and push. If you cannot resolve them with confidence, stop here and say why: do not start the review.\n2. Run /thermo-nuclear-code-quality-review on the pushed branch. {steps}\n\n{rules}", steps = thermo_steps(pr)),
         Kind::Ask | Kind::Task | Kind::Triage | Kind::Digest => format!("{note}\n\nThis is about my pull request:\n{facts}\n\n{rules}"),
     }
 }
