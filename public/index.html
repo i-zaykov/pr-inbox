@@ -292,7 +292,7 @@ button.state:hover { color: #fff; }
     <span class="sub" id="who"></span>
     <div class="grow"></div>
     <span class="dim updated" id="updated"></span>
-    <button class="btn" id="refresh-btn" data-act="refresh" title="Refresh (⌘R)"><span data-icon="refresh"></span>Refresh</button>
+    <button class="btn" id="refresh-btn" data-act="refresh" title="Refresh the PRs (⌘R reloads the app)"><span data-icon="refresh"></span>Refresh</button>
     <button class="btn btn-primary" data-act="triage"><span data-icon="sparkle"></span>Triage with Claude</button>
   </div>
   <div class="wrap filters" id="filters"></div>
@@ -1393,11 +1393,10 @@ document.addEventListener('keydown', ev => {
     if (t.dataset.act === 'reply-draft') { ev.preventDefault(); ACTIONS['reply-send']({ run: t.dataset.run }) }
     return
   }
-  // ⌘R refreshes the PRs and runs in place, from anywhere on the page; ⇧⌘R still reloads the whole page.
-  if ((ev.metaKey || ev.ctrlKey) && !ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'r') {
+  // ⌘R reloads the whole app, page and data, from anywhere: the app window has no browser menu that would.
+  if ((ev.metaKey || ev.ctrlKey) && !ev.altKey && ev.key.toLowerCase() === 'r') {
     ev.preventDefault()
-    loadPrs()
-    loadRuns()
+    location.reload()
     return
   }
   if (ev.key === 'Escape') {

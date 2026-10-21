@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::github::Pr;
-use crate::util::{checkouts_dir, data_dir, first_line, is_claude, local_date, notify, now_ms, reap, serde_name, set_aside, write_atomic, GIT_ENV};
+use crate::util::{checkouts_dir, data_dir, first_line, home, is_claude, local_date, notify, now_ms, reap, serde_name, set_aside, write_atomic, GIT_ENV};
 use crate::workspace::{self, Workspace};
 
 const MAX_EVENTS: usize = 600;
@@ -247,6 +247,23 @@ fn facts(pr: &Pr) -> String {
     lines.join("\n")
 }
 
+/// How a prompt names the thermo-nuclear review: by your local skill file when it is there. A headless run
+/// otherwise loads the claude.ai synced copy (anthropic-skills:), which lags behind the local one: it still
+/// flags files over 1000 lines and has no record step.
+fn thermo_skill() -> String {
+    thermo_skill_at(&home().join(".claude/skills/thermo-nuclear-code-quality-review/SKILL.md"))
+}
+
+fn thermo_skill_at(local: &Path) -> String {
+    if !local.is_file() {
+        return "/thermo-nuclear-code-quality-review".into();
+    }
+    format!(
+        "the thermo-nuclear code quality review in {} (read that file and follow it; do not load any other copy of the skill, such as anthropic-skills:thermo-nuclear-code-quality-review)",
+        local.display()
+    )
+}
+
 /// How every run that does a thermo-nuclear review goes on once the skill is named: compare against the PR's
 /// base, push the fixes, record the verdict, and end on the breakdown. The prompt spells the record command out
 /// because the review skill that loads may be a copy without PR Inbox's record step (the claude.ai synced one
@@ -328,15 +345,16 @@ fn build_prompt(kind: Kind, pr: &Pr, note: &str, rules: &str) -> String {
 Start your final report with one line: the verdict and what you did (closed it, or rescued and pushed it).
 
 {rules}", url = pr.url),
-        Kind::Thermo => format!("Run /thermo-nuclear-code-quality-review on this pull request's branch.\n\n{facts}\n\n{steps}\n\n{rules}", steps = thermo_steps(pr)),
-        Kind::Resolve => format!("Resolve this pull request's conflicts with '{base}', then run /thermo-nuclear-code-quality-review on the result.\n\n{facts}\n\n1. Merge origin/'{base}' into the branch and resolve the conflicts so the PR keeps its intent. Run the repo's checks and push. If you cannot resolve them with confidence, stop here and say why: do not start the review.\n2. Run /thermo-nuclear-code-quality-review on the pushed branch. {steps}\n\n{rules}", steps = thermo_steps(pr)),
+        Kind::Thermo => format!("Run {skill} on this pull request's branch.\n\n{facts}\n\n{steps}\n\n{rules}", skill = thermo_skill(), steps = thermo_steps(pr)),
+        Kind::Resolve => format!("Resolve this pull request's conflicts with '{base}', then run the thermo-nuclear review on the result.\n\n{facts}\n\n1. Merge origin/'{base}' into the branch and resolve the conflicts so the PR keeps its intent. Run the repo's checks and push. If you cannot resolve them with confidence, stop here and say why: do not start the review.\n2. Run {skill} on the pushed branch. {steps}\n\n{rules}", skill = thermo_skill(), steps = thermo_steps(pr)),
         Kind::Approve => format!(
-            "Run /thermo-nuclear-code-quality-review on this pull request as its reviewer, without changing it.\n\n{facts}\nAuthor: {author}\n\n\
+            "Run {skill} on this pull request as its reviewer, without changing it.\n\n{facts}\nAuthor: {author}\n\n\
              This is someone else's PR. Review its changes against origin/'{base}', and skip every step of the skill that edits, commits, pushes, records a verdict or runs code-review with --fix. \
              Then post exactly one review from my account with `gh pr review {url}`:\n\
              - Nothing critical left (no blocker and no confirmed bug): `--approve` with a one-line comment that is short, kind and funny about what the change does. Keep it work-appropriate.\n\
              - Something critical: `--request-changes` with each blocker in a sentence or two: the file, what goes wrong, and what to change. No jokes there.\n\n\
              Start your final report with one line: APPROVED or CHANGES REQUESTED, and why.\n\n{rules}",
+            skill = thermo_skill(),
             author = pr.author,
             url = pr.url,
         ),
@@ -1128,11 +1146,23 @@ mod tests {
     }
 
     #[test]
+    fn review_runs_name_the_local_skill_file_over_the_synced_copy() {
+        let local = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let named = thermo_skill_at(&local);
+        assert!(named.contains(&local.display().to_string()) && named.contains("do not load any other copy"));
+        assert_eq!(thermo_skill_at(Path::new("/no/such/SKILL.md")), "/thermo-nuclear-code-quality-review");
+        let pr = Pr { repo: "o/r".into(), head: "feat".into(), base: "main".into(), ..Default::default() };
+        for kind in [Kind::Thermo, Kind::Resolve, Kind::Approve] {
+            assert!(build_prompt(kind, &pr, "", "").contains(&thermo_skill()), "{kind:?}");
+        }
+    }
+
+    #[test]
     fn resolve_and_review_merges_before_it_reviews_and_records_the_verdict() {
         let pr = Pr { repo: "o/r".into(), head: "feat".into(), base: "main".into(), ..Default::default() };
         let prompt = build_prompt(Kind::Resolve, &pr, "", "");
         let merge = prompt.find("Merge origin/'main'").unwrap();
-        assert!(merge < prompt.find("2. Run /thermo-nuclear-code-quality-review").unwrap());
+        assert!(merge < prompt.find(&format!("2. Run {} on the pushed branch", thermo_skill())).unwrap());
         assert!(prompt.contains("do not start the review"));
         assert!(prompt.contains("record-review --repo 'o/r' --branch 'feat'"));
         assert_eq!(serde_name(&Kind::Resolve), "resolve");
