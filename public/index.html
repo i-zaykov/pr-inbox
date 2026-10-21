@@ -217,6 +217,8 @@ button.state:hover { color: #fff; }
 /* run cards: a PR's own runs unfolded under its row, and the triage run inside its card */
 .strip-runs { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px 40px; }
 .hero-run { margin-top: 4px; }
+.left-runs { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; }
+a.run-cwd { color: var(--link); }
 .run { background: var(--raise); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; transition: box-shadow .3s; }
 .run.flash { box-shadow: 0 0 0 2px var(--primary); }
 .run-toggle { all: unset; cursor: pointer; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; border-radius: 10px; }
@@ -500,6 +502,8 @@ const findPr = k => allPrs().find(pr => keyOf(pr) === k)
 const runFor = pr => S.runs.find(r => r.prUrl === pr.url && active(r))
 // A PR's runs, newest first, as the server lists them.
 const runsOf = pr => S.runs.filter(r => r.prUrl === pr.url)
+// The PR a run sits under on the board, while that PR is still in your inbox.
+const prOf = r => r.prUrl ? allPrs().find(p => p.url === r.prUrl) : null
 // The runs whose kind last failed or was cut off on this PR, and that Retry may start again: a request in your
 // words resumes; any other kind restarts only while its action still applies and asks nothing first.
 function retryable(pr) {
@@ -750,7 +754,19 @@ function renderBoard() {
 function boardBody() {
   if (!S.data) return S.error ? '' : '<div class="panel"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>'
   const buckets = S.group === 'repo' ? repoBuckets() : laneBuckets()
-  return buckets || `<div class="panel empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
+  return leftRuns() + (buckets || `<div class="panel empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`)
+}
+
+// Runs from the past day on PRs that have left your inbox (merged, closed, or reviewed so they no longer wait on
+// you), so a verdict or report stays readable after its row is gone. Dismiss clears one.
+function leftRuns() {
+  if (S.lane !== 'all') return ''
+  const runs = S.runs.filter(r => r.prUrl && !prOf(r) && (active(r) || Date.now() - (r.endedAt || r.startedAt) < DAY))
+  if (!runs.length) return ''
+  return `<section class="group" data-enter="left">
+    <div class="group-head"><h2>Left your inbox</h2><span class="sub">${plural(runs.length, 'run')} on PRs that were merged, closed or reviewed · Dismiss to clear</span></div>
+    <div class="panel left-runs">${runs.map(runCard).join('')}</div>
+  </section>`
 }
 
 function laneBuckets() {
@@ -817,9 +833,10 @@ function releaseInfo(repo) {
 
 // ---------- run cards ----------
 
-// Under a PR the card names the run's kind; the triage card names the run.
+// Under its PR the card names the run's kind; anywhere else it names the run, and links a PR that has left.
 function runCard(r) {
   const id = esc(r.id)
+  const under = prOf(r)
   const open = S.openRun === r.id
   // Claude Code reports an API-price estimate on every run; it is only money spent when the run used an API key.
   const billed = r.costUsd && r.apiKeySource && r.apiKeySource !== 'none' ? `$${r.costUsd.toFixed(2)} API` : ''
@@ -853,6 +870,7 @@ function runCard(r) {
          <button class="btn btn-sm btn-ghost" data-act="run-dismiss" data-run="${id}">Dismiss</button>`
     body = `<div class="run-body">
       <div class="run-output">${output}</div>
+      ${r.prUrl && !under ? `<a class="run-cwd" href="${esc(r.prUrl)}" target="_blank" rel="noreferrer">${esc(r.prUrl.replace('https://github.com/', ''))}</a>` : ''}
       <div class="run-cwd">${esc(tilde(r.sessionCwd || r.cwd))}</div>
       <div class="run-acts">${acts}<button class="btn btn-sm btn-ghost" data-act="run-log" data-run="${id}">${S.logOpen[r.id] ? 'Hide log' : 'Full log'}</button></div>
       ${reply}${log}
@@ -860,7 +878,7 @@ function runCard(r) {
   }
   return `<div class="run${open ? ' open' : ''}${active(r) ? ' working' : ''}${S.flash === r.id ? ' flash' : ''}" id="run-${id}" data-enter="run:${id}" data-sig="${esc(cardSig(r))}" style="--dot:${RUN_DOT[r.status] || 'var(--mute)'}">
     <button class="run-toggle" data-act="run-toggle" data-run="${id}" aria-expanded="${open}">
-      <div class="run-top"><span class="dot"></span><span class="run-title">${esc(r.prUrl ? runName(r) : r.title)}</span>${icon('chevron', 14, 'chev')}</div>
+      <div class="run-top"><span class="dot"></span><span class="run-title">${esc(under ? runName(r) : r.title)}</span>${icon('chevron', 14, 'chev')}</div>
       <div class="run-meta">${esc(meta)}</div>${preview}
     </button>${body}
   </div>`
@@ -1095,9 +1113,10 @@ async function loadHealth() {
 
 // ---------- actions ----------
 
-// Opens a run's card where it lives: under its PR, unfolding the PR's runs, or inside the triage card.
+// Opens a run's card where it lives: under its PR, unfolding the PR's runs, in Left your inbox, or inside the
+// triage card.
 function showRun(id) {
-  const pr = allPrs().find(p => p.url === S.runs.find(r => r.id === id)?.prUrl)
+  const pr = prOf(S.runs.find(r => r.id === id) || {})
   if (pr) S.runsOpen[keyOf(pr)] = true
   S.openRun = id
   S.flash = id
