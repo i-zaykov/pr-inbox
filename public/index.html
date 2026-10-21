@@ -331,7 +331,8 @@ const VERBS = {
   // One run: resolve the conflicts and push, then the thermo-nuclear review of the result.
   resolve: { menu: 'Resolve conflicts, then review', run: 'resolve', writes: true, mine: true, when: pr => pr.mergeable === 'CONFLICTING' },
   review: { menu: 'Review with Claude', run: 'review' },
-  thermo: { menu: 'Thermo-nuclear review', run: 'thermo', writes: true, mine: true },
+  // Offered until the PR's current commit has passed the review; a new commit makes it outdated and offers it again.
+  thermo: { menu: 'Thermo-nuclear review', run: 'thermo', writes: true, mine: true, when: pr => review(pr).state !== 'pass' },
   relevance: { menu: 'Still relevant? Close or rescue', run: 'relevance', writes: true, mine: true, confirm: {
     title: pr => `Is ${short(pr)} still relevant?`,
     body: pr => `<p style="margin:0">Claude works out what <b>${esc(pr.title)}</b> was for and checks it against today's <code>${esc(pr.base)}</code>.</p>
@@ -499,8 +500,8 @@ function retryable(pr) {
   const latest = new Map()
   for (const r of runsOf(pr)) if (!latest.has(r.kind)) latest.set(r.kind, r)
   const mine = pr.lane !== 'waiting'
-  const again = r => resumes(r) || Object.entries(VERBS).some(([v, V]) => V.run === r.kind && !V.confirm && can(v, pr, mine))
-  return [...latest.values()].filter(r => (r.status === 'failed' || r.status === 'interrupted') && again(r))
+  const offered = r => resumes(r) || Object.entries(VERBS).some(([v, V]) => V.run === r.kind && !V.confirm && can(v, pr, mine))
+  return [...latest.values()].filter(r => (r.status === 'failed' || r.status === 'interrupted') && offered(r))
 }
 const lanePrs = id => allPrs().filter(pr => pr.lane === id).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
 // A finished gh action keeps its row dimmed with a check for two minutes, then the row follows GitHub again.
@@ -707,7 +708,7 @@ function extras(pr, verb, mine) {
     : can('admin', pr, mine) ? button('admin', `${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}`, 'Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.')
     : verb !== 'relevance' && can('relevance', pr, mine) ? button('relevance', 'Still relevant?', `Claude checks it against today's ${pr.base}: closes it if it no longer matters, rescues it if it does`)
     : `<a class="btn" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open on GitHub</a>`
-  const thermo = can('thermo', pr, mine) && review(pr).state !== 'pass' ? button('thermo', `${icon('sparkle', 14)}Thermo review`, "Run the thermo-nuclear review on this PR's branch") : ''
+  const thermo = can('thermo', pr, mine) ? button('thermo', `${icon('sparkle', 14)}Thermo review`, "Run the thermo-nuclear review on this PR's branch") : ''
   return one + thermo
 }
 
@@ -840,7 +841,7 @@ function runCard(r) {
     const acts = active(r)
       ? `<button class="btn btn-sm" data-act="run-stop" data-run="${id}" ${r.stopRequested ? 'disabled' : ''}>${r.stopRequested ? 'Stopping…' : 'Stop'}</button>`
       : `<button class="btn btn-sm" data-act="reply-open" data-run="${id}">Reply</button>
-         ${r.status !== 'done' ? `<button class="btn btn-sm" data-act="run-retry" data-run="${id}">${r.status === 'failed' ? 'Retry' : 'Resume'}</button>` : ''}
+         ${r.status === 'failed' ? `<button class="btn btn-sm" data-act="run-again" data-run="${id}">Retry</button>` : r.status !== 'done' ? `<button class="btn btn-sm" data-act="run-retry" data-run="${id}">Resume</button>` : ''}
          ${r.sessionStarted ? `<button class="btn btn-sm" data-act="run-terminal" data-run="${id}">Open in Terminal</button>` : ''}
          <button class="btn btn-sm btn-ghost" data-act="run-dismiss" data-run="${id}">Dismiss</button>`
     body = `<div class="run-body">
@@ -1104,12 +1105,14 @@ function announce(run) {
   showRun(run.id)
 }
 
-async function startTriage() {
+// Starts a triage or morning summary over every PR and opens its card; returns whether it started.
+async function startOverview(kind) {
   try {
-    const run = await api('/api/runs', { kind: 'triage' })
+    const run = await api('/api/runs', { kind })
     await loadRuns()
     announce(run)
-  } catch (e) { toast(e.message, true) }
+    return true
+  } catch (e) { toast(e.message, true); return false }
 }
 
 // Starts one Claude run per PR, one request at a time, with each row showing its progress. A row keeps
@@ -1163,13 +1166,23 @@ async function ghEach(verb, prs) {
 // A verb with a gh action runs it; any other starts its Claude run.
 const perform = (v, pr) => VERBS[v].gh ? ghEach(v, [pr]) : startRun(VERBS[v].run, pr, VERBS[v].note)
 
+// Starts a finished run's kind again, fresh: on its PR's worktree as it is today, or over every PR for a triage
+// or morning summary. A request in your own words has no kind to start from, so it resumes its run, and a kind
+// that asks first opens its confirmation. Returns whether a run started.
+async function again(r) {
+  if (resumes(r)) return runVerb(r.id, 'retry')
+  if (!r.prUrl) return startOverview(r.kind)
+  const pr = allPrs().find(p => p.url === r.prUrl)
+  if (!pr) { toast('That PR is no longer in your list', true); return false }
+  const v = Object.keys(VERBS).find(v => VERBS[v].run === r.kind)
+  if (VERBS[v]?.confirm) { openDialog({ type: 'confirm', verb: v, k: keyOf(pr) }); return false }
+  return (await startEach(r.kind, [pr])).length > 0
+}
+
 // Starts again each kind whose last run on the PR failed, one after another: writing runs on one PR queue.
 async function retryAll(pr) {
   let n = 0
-  for (const r of retryable(pr)) {
-    if (resumes(r)) n += await runVerb(r.id, 'retry') ? 1 : 0
-    else n += (await startEach(r.kind, [pr])).length
-  }
+  for (const r of retryable(pr)) n += await again(r) ? 1 : 0
   if (n) toast(`Started ${plural(n, 'Claude run')} on ${short(pr)}`)
 }
 
@@ -1248,7 +1261,7 @@ async function runVerb(id, verb, body = {}, done) {
 // Every data-act resolves here. Each handler gets the PR of the row it sits in (or the dialog's PR), the run id, the lane and the element.
 const ACTIONS = {
   refresh: () => loadPrs(),
-  triage: () => startTriage(),
+  triage: () => startOverview('triage'),
   filter: ({ lane }) => {
     S.lane = lane
     for (const key of [...S.seen]) if (key.startsWith('lane:')) S.seen.delete(key)
@@ -1295,6 +1308,7 @@ const ACTIONS = {
     loadRuns()
   },
   'run-stop': ({ run }) => runVerb(run, 'stop'),
+  'run-again': ({ run }) => again(S.runs.find(r => r.id === run)),
   'run-retry': ({ run }) => runVerb(run, 'retry'),
   'run-terminal': ({ run }) => runVerb(run, 'terminal', {}, 'Opened in Terminal'),
   'run-dismiss': ({ run }) => runVerb(run, 'dismiss'),
