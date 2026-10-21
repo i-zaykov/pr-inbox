@@ -493,11 +493,14 @@ const findPr = k => allPrs().find(pr => keyOf(pr) === k)
 const runFor = pr => S.runs.find(r => r.prUrl === pr.url && active(r))
 // A PR's runs, newest first, as the server lists them.
 const runsOf = pr => S.runs.filter(r => r.prUrl === pr.url)
-// The runs whose kind last failed or was cut off on this PR: what its Retry starts again.
+// The runs whose kind last failed or was cut off on this PR, and that Retry may start again: a request in your
+// words resumes; any other kind restarts only while its action still applies and asks nothing first.
 function retryable(pr) {
   const latest = new Map()
   for (const r of runsOf(pr)) if (!latest.has(r.kind)) latest.set(r.kind, r)
-  return [...latest.values()].filter(r => r.status === 'failed' || r.status === 'interrupted')
+  const mine = pr.lane !== 'waiting'
+  const again = r => resumes(r) || Object.entries(VERBS).some(([v, V]) => V.run === r.kind && !V.confirm && can(v, pr, mine))
+  return [...latest.values()].filter(r => (r.status === 'failed' || r.status === 'interrupted') && again(r))
 }
 const lanePrs = id => allPrs().filter(pr => pr.lane === id).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
 // A finished gh action keeps its row dimmed with a check for two minutes, then the row follows GitHub again.
@@ -612,7 +615,7 @@ function tags(pr, lane, byRepo) {
   const out = []
   const tag = (label, cls, title = '') => out.push(`<span class="tag ${cls}"${title ? ` title="${esc(title)}"` : ''}>${label}</span>`)
   if (byRepo && lane === 'ready') tag('Ready to merge', 'tag-ok')
-  if (byRepo && lane === 'waiting') tag('Your review requested', 'tag-info')
+  if (byRepo && lane === 'waiting') tag('Waiting on you', 'tag-info')
   if (pr.ci === 'fail' && pr.mergeState === 'UNSTABLE') tag('Optional check failing', 'tag-warn', 'GitHub does not require this check; the PR can still merge')
   else ({ pass: () => tag('CI passing', 'tag-ok'), fail: () => tag('CI failing', 'tag-bad'), running: () => tag('CI running', 'tag-mute'), none: () => tag('No checks', 'tag-mute') })[pr.ci]()
   if (pr.mergeable === 'CONFLICTING') tag('Conflicts', 'tag-bad')
@@ -798,7 +801,7 @@ function releaseInfo(repo) {
   if (p.method === 'none') return ['no releases yet, so it only merges']
   const out = p.method === 'tag' ? [p.next ? `next ${ver(p.next)}` : '', `latest ${ver(p.latest)}`] : [`releases with ${ver('release.yml')}`, p.latest ? `latest ${ver(p.latest)}` : '']
   const commits = `${plural(p.unreleased || 0, 'commit')} unreleased`
-  if (p.unreleased && p.latest) out.push(`<a href="https://github.com/${esc(repo)}/compare/${esc(encodeURIComponent(p.latest))}...${esc(encodeURIComponent(p.branch))}" target="_blank" rel="noreferrer">${commits}</a>`)
+  if (p.unreleased && p.latest) out.push(`<a href="https://github.com/${esc(repo)}/compare/${esc(encodeURI(p.latest))}...${esc(encodeURI(p.branch))}" target="_blank" rel="noreferrer">${commits}</a>`)
   else if (p.unreleased) out.push(commits)
   else if (p.unreleased === 0) out.push(`${esc(p.branch)} fully released`)
   return out.filter(Boolean)
@@ -1164,7 +1167,7 @@ const perform = (v, pr) => VERBS[v].gh ? ghEach(v, [pr]) : startRun(VERBS[v].run
 async function retryAll(pr) {
   let n = 0
   for (const r of retryable(pr)) {
-    if (resumes(r)) { await runVerb(r.id, 'retry'); n++ }
+    if (resumes(r)) n += await runVerb(r.id, 'retry') ? 1 : 0
     else n += (await startEach(r.kind, [pr])).length
   }
   if (n) toast(`Started ${plural(n, 'Claude run')} on ${short(pr)}`)
@@ -1234,9 +1237,12 @@ function setGroup(group) {
   renderBoard()
 }
 
+// Returns whether the server took it.
 async function runVerb(id, verb, body = {}, done) {
-  try { await api(`/api/runs/${id}/${verb}`, body); if (done) toast(done) } catch (e) { toast(e.message, true) }
+  let ok = false
+  try { await api(`/api/runs/${id}/${verb}`, body); ok = true; if (done) toast(done) } catch (e) { toast(e.message, true) }
   loadRuns()
+  return ok
 }
 
 // Every data-act resolves here. Each handler gets the PR of the row it sits in (or the dialog's PR), the run id, the lane and the element.

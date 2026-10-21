@@ -27,7 +27,7 @@ for old in "$HOME"/Library/LaunchAgents/*.pr-inbox.plist(N); do
 done
 # Anchored to the start of the command line: a running Claude review has this path in its prompt, and must
 # outlive the restart (the new server adopts it).
-pkill -f "^$BIN( |\$)" 2>/dev/null || true
+pkill -f "^${BIN//./\\.}( |\$)" 2>/dev/null || true
 sleep 1
 /bin/mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 /bin/cp -f target/release/pr-inbox "$BIN"
