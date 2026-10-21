@@ -4,42 +4,110 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>PR Inbox</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%232e2b25'/%3E%3Crect x='12' y='15' width='40' height='7' rx='3.5' fill='%23728157'/%3E%3Crect x='12' y='28' width='30' height='7' rx='3.5' fill='%23c67139'/%3E%3Crect x='12' y='41' width='22' height='7' rx='3.5' fill='%23ffc6a5'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="/organic.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='18' fill='%23092012'/%3E%3Crect x='12' y='15' width='40' height='7' rx='3.5' fill='%236dd17f'/%3E%3Crect x='12' y='28' width='30' height='7' rx='3.5' fill='%23f2b966'/%3E%3Crect x='12' y='41' width='22' height='7' rx='3.5' fill='%23d7f4e0'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700&family=Bricolage+Grotesque:wght@500;600;700&display=swap">
 <style>
-/* Page layer over the Organic system (organic.css): every color, font, radius and shadow comes from its tokens. */
-body { margin: 0; background: var(--color-bg); color: var(--color-text); font-family: var(--font-body); }
-a { color: var(--color-accent-700); }
-a:hover { color: var(--color-accent-800); }
-button:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
-.mono { font-family: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace; }
-textarea.input { border-radius: var(--radius-md); padding: 12px 14px; }
-/* Readability: Caprasimo stays on short display text (brand, bucket headings, panel and dialog titles);
-   buttons and long lines read in Figtree. */
-.btn { font-family: var(--font-body); font-weight: 600; }
+/* Deep green: one dark theme. Every color is a token here, and the status hues are shared by lane dots,
+   tags and runs. */
+:root {
+  color-scheme: dark;
+  --bg: oklch(0.22 0.04 155);
+  --panel: oklch(0.26 0.035 155);
+  --raise: oklch(0.28 0.038 155);
+  --raise-hover: oklch(0.32 0.038 155);
+  --line: oklch(0.33 0.03 155);
+  --line-strong: oklch(0.36 0.035 155);
+  --hover: oklch(1 0 0 / .10);
+  --text: oklch(0.96 0.01 155);
+  --sub: oklch(0.78 0.02 155);
+  --dim: oklch(0.66 0.02 155);
+  --link: oklch(0.86 0.06 155);
+  --primary: oklch(0.94 0.04 155);
+  --primary-ink: oklch(0.17 0.025 155);
+  --ok: oklch(0.78 0.15 148);
+  --ok-ink: oklch(0.84 0.14 148);
+  --warn: oklch(0.82 0.12 75);
+  --warn-ink: oklch(0.86 0.12 75);
+  --bad: oklch(0.72 0.17 25);
+  --bad-ink: oklch(0.82 0.14 25);
+  --info: oklch(0.75 0.11 260);
+  --info-ink: oklch(0.84 0.09 260);
+  --approval: oklch(0.74 0.08 200);
+  --mute: oklch(0.55 0.02 155);
+  --stale: oklch(0.45 0.02 155);
+  --font: 'Figtree', system-ui, sans-serif;
+  --display: 'Bricolage Grotesque', 'Figtree', sans-serif;
+  --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
+  --shadow: 0 18px 48px oklch(0.12 0.03 155 / .6);
+}
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; line-height: 1.4; }
+a { color: var(--link); text-underline-offset: 3px; }
+a:hover { color: #fff; }
+h1, h2 { margin: 0; font-family: var(--display); font-weight: 600; line-height: 1.2; }
+p { margin: 0; }
+button { font: inherit; color: inherit; cursor: pointer; }
+:focus { outline: none; }
+:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+::selection { background: oklch(0.94 0.04 155 / .3); }
+code, .mono { font-family: var(--mono); font-size: 12px; }
+.sub { color: var(--sub); }
+.dim { color: var(--dim); }
+.grow { flex: 1 1 auto; }
+.wrap { max-width: 1376px; margin: 0 auto; padding-inline: 32px; }
+
+/* controls */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 8px; border: 1px solid var(--line-strong); background: var(--raise); color: var(--text); font-weight: 500; white-space: nowrap; text-decoration: none; transition: background-color .15s, border-color .15s, color .15s, transform .12s; }
+.btn:hover { background: var(--raise-hover); color: var(--text); }
+.btn:active:not(:disabled) { transform: scale(.96); }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn svg { display: block; flex: none; }
+.btn-primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.btn-primary:hover { background: #fff; color: var(--primary-ink); }
+.btn-ghost { border-color: transparent; background: transparent; color: var(--sub); }
+.btn-ghost:hover { background: var(--hover); color: #fff; }
+.btn-sm { height: 28px; padding: 0 10px; font-size: 12px; }
+.btn-icon { width: 32px; padding: 0; }
+.btn-admin { background: var(--bad); border-color: var(--bad); color: var(--primary-ink); }
+.btn-admin:hover:not(:disabled) { background: var(--bad-ink); color: var(--primary-ink); }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid oklch(0.34 0.035 155); background: transparent; color: oklch(0.82 0.02 155); font-weight: 500; transition: background-color .18s, border-color .18s, color .18s, transform .12s; }
+.pill:hover { background: var(--hover); color: #fff; }
+.pill:active { transform: scale(.95); }
+.pill[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.pill .n { font-variant-numeric: tabular-nums; opacity: .7; }
+.dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--dot, var(--mute)); }
+.tag { display: inline-flex; align-items: center; height: 20px; padding: 0 7px; border-radius: 999px; font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.tag-ok { background: oklch(0.78 0.15 148 / .18); color: var(--ok-ink); }
+.tag-warn { background: oklch(0.82 0.12 75 / .18); color: var(--warn-ink); }
+.tag-bad { background: oklch(0.72 0.17 25 / .20); color: var(--bad-ink); }
+.tag-info { background: oklch(0.75 0.11 260 / .20); color: var(--info-ink); }
+.tag-mute { background: oklch(1 0 0 / .08); color: var(--sub); }
+.input { width: 100%; min-height: 36px; padding: 8px 12px; font: inherit; font-size: 13.5px; color: var(--text); caret-color: var(--primary); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 8px; }
+.input:hover { border-color: var(--mute); }
+.input:focus-visible { border-color: var(--primary); outline-offset: 0; }
+textarea.input { min-height: 90px; resize: vertical; line-height: 1.5; }
+.check { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--sub); cursor: pointer; }
+.check input { accent-color: var(--primary); width: 16px; height: 16px; }
 .spin { width: 14px; height: 14px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: spin .8s linear infinite; flex: none; }
-@keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse { 50% { opacity: .35; } }
+/* What a row says instead of its buttons while something runs on it, or once it is done. */
+.state { display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 4px; border: 0; background: none; font-weight: 600; color: var(--sub); }
+button.state:hover { color: #fff; }
+.state.ok { color: var(--ok-ink); }
 
 /* Motion: things animate the first time they appear, never on a routine re-render. */
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 50% { opacity: .35; } }
 @keyframes rise { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes zoom { from { opacity: 0; transform: translateY(10px) scale(.96); } to { opacity: 1; transform: none; } }
 @keyframes drop { from { opacity: 0; transform: translateY(-6px) scale(.97); } to { opacity: 1; transform: none; } }
 @keyframes pop { 0% { opacity: 0; transform: scale(.3); } 65% { opacity: 1; transform: scale(1.18); } 100% { transform: scale(1); } }
-@keyframes bump { 40% { transform: scale(1.22); } 100% { transform: scale(1); } }
 @keyframes leave { to { opacity: 0; transform: translateY(8px); } }
 .enter { animation: rise .5s cubic-bezier(.2, .8, .2, 1) backwards; animation-delay: calc(var(--i, 0) * 45ms); }
-.btn { transition: background-color .15s, border-color .15s, color .15s, transform .12s; }
-.btn:active:not(:disabled) { transform: scale(.95); }
-.filter { transition: background-color .18s, border-color .18s, color .18s, transform .12s; }
-.filter:active { transform: scale(.95); }
 .spinning svg { animation: spin .9s linear infinite; }
 .pop { animation: pop .45s cubic-bezier(.2, .8, .2, 1) both; }
-.bump { animation: bump .4s cubic-bezier(.2, .8, .2, 1); }
 .menu.anim { animation: drop .16s ease-out both; transform-origin: top right; }
 .dialog-backdrop.anim { animation: fade .2s ease both; }
 .dialog-backdrop.anim .dialog { animation: zoom .28s cubic-bezier(.2, .8, .2, 1) both; }
@@ -48,222 +116,197 @@ textarea.input { border-radius: var(--radius-md); padding: 12px 14px; }
 .toast.out { animation: leave .25s ease forwards; }
 
 /* header */
-.top { position: sticky; top: 0; z-index: 5; background: var(--color-neutral-900); color: var(--color-neutral-100); border-radius: 0 0 var(--radius-lg) var(--radius-lg); margin-bottom: 24px; }
-.top-row { max-width: 1440px; margin: 0 auto; padding: 22px 32px 14px; display: flex; align-items: center; gap: 16px; flex-wrap: wrap; }
-.brand { display: flex; align-items: baseline; gap: 12px; margin-right: auto; }
-.brand h1 { margin: 0; font-size: 30px; line-height: 1; }
-.brand .who { font-size: 14px; color: var(--color-accent-300); }
-.updated { font-size: 13px; color: var(--color-neutral-400); display: flex; align-items: center; gap: 8px; }
-.top .btn { border-radius: 999px; }
-.btn-dark { color: var(--color-neutral-100); border-color: var(--color-neutral-700); }
-.btn-dark:hover { background: var(--color-neutral-800); }
-.filters { max-width: 1440px; margin: 0 auto; padding: 0 32px 16px; display: flex; gap: 8px; flex-wrap: wrap; }
-.filter { display: flex; align-items: center; gap: 8px; padding: 8px 14px 8px 12px; border-radius: 999px; border: 1px solid var(--color-neutral-700); background: transparent; color: var(--color-neutral-100); font-family: var(--font-body); font-size: 13px; font-weight: 600; cursor: pointer; }
-.filter:hover { background: var(--color-neutral-800); }
-.filter[aria-pressed="true"] { background: var(--color-accent); border-color: var(--color-accent); color: var(--color-neutral-900); }
-.filter .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dot); }
-.filter .n { font-weight: 400; opacity: .75; }
-/* Group by status or repository, at the end of the filter row. */
-.group-by { margin-left: auto; display: flex; align-items: center; gap: 2px; padding: 3px; border-radius: 999px; border: 1px solid var(--color-neutral-700); }
-.group-by .label { font-size: 12px; color: var(--color-neutral-400); padding: 0 6px 0 10px; }
-.group-by button { all: unset; cursor: pointer; padding: 5px 12px; border-radius: 999px; font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--color-neutral-100); transition: background-color .18s, color .18s; }
-.group-by button:hover { background: var(--color-neutral-800); }
-.group-by button[aria-pressed="true"] { background: var(--color-neutral-100); color: var(--color-neutral-900); }
-.group-by button:focus-visible { outline: 2px solid var(--color-accent); }
+.top { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--line); }
+.top-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 16px; min-height: 60px; padding-block: 10px; }
+.logo { width: 32px; height: 32px; border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
+.top h1 { font-size: 20px; }
+.updated { display: inline-flex; align-items: center; gap: 8px; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 14px; }
+.group-by { display: flex; align-items: center; gap: 8px; }
 
 /* notices */
-.notice { max-width: 1440px; margin: 0 auto 20px; padding: 0 32px; }
-.notice > div { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; padding: 14px 20px; border-radius: var(--radius-lg); background: var(--color-accent-100); color: var(--color-accent-800); font-size: 14px; }
-.notice .btn { border-radius: 999px; font-size: 13px; }
+.notice { padding-top: 20px; }
+.notice-box { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; border-radius: 10px; border: 1px solid oklch(0.82 0.12 75 / .4); background: oklch(0.82 0.12 75 / .10); }
+.notice-box > svg { color: var(--warn-ink); }
+.notice-text { flex: 1 1 320px; }
 
-/* layout */
-.layout { max-width: 1440px; margin: 0 auto; padding: 8px 32px 64px; display: flex; gap: 32px; align-items: flex-start; flex-wrap: wrap; }
-main { flex: 1 1 640px; min-width: 0; display: flex; flex-direction: column; gap: 36px; }
+/* board */
+.board { padding-top: 20px; padding-bottom: 48px; display: flex; flex-direction: column; gap: 24px; }
+.panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; }
+.empty { padding: 24px 20px; color: var(--sub); }
+.skeleton { height: 64px; margin: 14px 16px; border-radius: 8px; background: var(--raise); animation: pulse 1.4s ease-in-out infinite; }
 
 /* Claude's triage */
-.hero { background: var(--color-accent-700); color: var(--color-neutral-100); border-radius: var(--radius-lg); padding: 28px 32px; display: flex; flex-direction: column; gap: 14px; }
+.hero { padding: 18px 20px; display: flex; flex-direction: column; gap: 10px; }
 .hero-kicker { display: flex; align-items: center; gap: 10px; }
-.hero-badge { width: 30px; height: 30px; border-radius: 50%; background: var(--color-accent-300); color: var(--color-accent-900); display: flex; align-items: center; justify-content: center; flex: none; }
-.hero-label { font-size: 13px; font-weight: 600; color: var(--color-accent-200); display: flex; align-items: center; gap: 8px; }
-.hero-line { margin: 0; font-family: var(--font-body); font-weight: 600; letter-spacing: -0.01em; font-size: 24px; line-height: 1.38; color: var(--color-neutral-100); text-wrap: pretty; max-width: 760px; }
-.hero-detail { display: flex; flex-direction: column; gap: 4px; font-size: 14px; line-height: 1.6; color: var(--color-accent-100); max-width: 760px; }
-.hero-detail .sec { font-weight: 700; margin-top: 10px; }
-.hero-detail .gap { height: 6px; }
-.hero-detail b { color: var(--color-neutral-100); }
-.hero-detail a { color: var(--color-accent-300); }
-.hero-detail a:hover { color: var(--color-accent-200); }
-.hero-detail code { font-family: "JetBrains Mono", monospace; font-size: 12.5px; background: color-mix(in srgb, var(--color-accent-900) 35%, transparent); padding: 0 5px; border-radius: 6px; }
+.hero-badge { width: 26px; height: 26px; border-radius: 8px; background: var(--primary); color: var(--primary-ink); display: flex; align-items: center; justify-content: center; flex: none; }
+.hero-label { font-size: 12px; font-weight: 600; color: var(--sub); display: flex; align-items: center; gap: 8px; }
+.hero-line { font-size: 16px; font-weight: 600; line-height: 1.45; text-wrap: pretty; max-width: 820px; }
+.hero-line.failed { color: var(--bad-ink); }
+.hero-detail { display: flex; flex-direction: column; gap: 4px; font-size: 13px; line-height: 1.6; color: var(--sub); max-width: 820px; }
+.hero-detail .sec { font-weight: 700; color: var(--text); margin-top: 8px; }
+.hero-detail .gap { height: 4px; }
+.hero-detail b { color: var(--text); }
+.hero-detail code { background: var(--bg); padding: 0 5px; border-radius: 4px; }
 .hero-acts { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
-.hero-link { border: none; background: transparent; padding: 4px 0; font-family: var(--font-body); font-size: 13px; font-weight: 600; color: var(--color-accent-300); cursor: pointer; display: flex; align-items: center; gap: 6px; }
-.hero-link:hover { color: var(--color-accent-200); }
+.hero-link { border: 0; background: none; padding: 2px 0; font-weight: 600; color: var(--link); display: inline-flex; align-items: center; gap: 6px; }
+.hero-link:hover { color: #fff; }
 .hero-link svg { transition: transform .2s; }
 .hero-link[aria-expanded="true"] svg { transform: rotate(180deg); }
 
-/* buckets and rows */
-.bucket { display: flex; flex-direction: column; gap: 12px; scroll-margin-top: 170px; }
-.bucket-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 0 4px; }
-.bucket-head h2 { margin: 0; font-size: 24px; }
-.count { transition: background-color .3s; min-width: 28px; height: 28px; padding: 0 8px; border-radius: 999px; background: var(--dot); color: var(--ink); display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; }
-.bucket-hint { font-size: 14px; color: var(--color-neutral-700); }
-.bucket-head .btn { border-radius: 999px; font-size: 13px; }
-.head-acts { margin-left: auto; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.rows { display: flex; flex-direction: column; gap: 8px; }
-.empty { padding: 28px; border-radius: var(--radius-lg); background: var(--color-neutral-100); color: var(--color-neutral-700); font-size: 14px; }
-/* Repository groups: which lanes the repo's PRs are in, and how its next release looks. */
-.lanes-in { display: flex; gap: 14px; flex-wrap: wrap; font-size: 13px; color: var(--color-neutral-800); }
-.lane-chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
-.lane-chip::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--dot); flex: none; }
-.pr-ref .lane-chip { font-family: var(--font-body); font-size: 12px; font-weight: 600; color: var(--color-neutral-800); }
-.repo-release { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 0 4px; font-size: 13px; color: var(--color-neutral-700); }
-.ver { font-family: "JetBrains Mono", monospace; font-size: 12.5px; color: var(--color-neutral-900); }
-.repo-release .pending { color: var(--color-accent-700); font-weight: 600; }
-.skeleton { height: 92px; border-radius: var(--radius-md); background: var(--color-neutral-100); animation: pulse 1.4s ease-in-out infinite; }
+/* groups: one per lane or per repository */
+.group { position: relative; display: flex; flex-direction: column; gap: 10px; scroll-margin-top: 130px; }
+.group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; padding: 0 4px; }
+.group-head > .dot { align-self: center; }
+.group-head h2 { font-size: 18px; }
+.group-head h2 a { color: inherit; text-decoration: none; }
+.group-head h2 a:hover { text-decoration: underline; }
+.head-acts { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.group-note { padding: 0 4px; margin-top: -4px; font-size: 12px; color: var(--dim); }
+.ver { font-family: var(--mono); font-size: 12px; color: var(--text); }
 
-.pr { position: relative; background: var(--color-neutral-100); border-radius: var(--radius-md); padding: 18px 22px; display: flex; gap: 16px; align-items: center; transition: opacity .3s, box-shadow .2s, transform .2s; }
-.pr:hover { box-shadow: var(--shadow-md); transform: translateY(-1px); }
+/* PR rows */
+.pr { position: relative; transition: opacity .3s; }
+.pr + .pr { border-top: 1px solid var(--line); }
 .pr.done { opacity: .6; }
-.pr-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
-.pr-ref { display: flex; align-items: baseline; gap: 8px; font-family: "JetBrains Mono", monospace; font-size: 12px; color: var(--color-neutral-700); }
-.pr-ref a { color: inherit; text-decoration: none; }
-.pr-ref a:hover { text-decoration: underline; }
-.pr-ref .num { color: var(--color-neutral-900); font-weight: 500; }
-.pr-title { font-size: 16px; font-weight: 600; line-height: 1.35; text-wrap: pretty; color: var(--color-text); text-decoration: none; overflow-wrap: anywhere; }
-.pr-title:hover { color: var(--color-text); text-decoration: underline; }
-.pr-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: 12.5px; color: var(--color-neutral-700); }
-.pr-meta .tag { border-radius: 999px; font-weight: 600; }
-.diff { font-family: "JetBrains Mono", monospace; }
-.diff .add { color: var(--color-accent-2-700); }
-.diff .del { color: var(--color-accent-700); }
-.fails { display: flex; gap: 12px; flex-wrap: wrap; font-family: "JetBrains Mono", monospace; font-size: 12px; }
-.fails a { color: var(--color-accent-700); text-decoration: none; }
+/* Someone else's PR: tinted, with a bar in the review color and its author beside the number. */
+.pr.theirs { background: oklch(0.75 0.11 260 / .07); box-shadow: inset 3px 0 0 var(--info); }
+.panel > .pr:first-child { border-top-left-radius: 11px; border-top-right-radius: 11px; }
+.panel > .pr:last-child { border-bottom-left-radius: 11px; border-bottom-right-radius: 11px; }
+.author { display: inline-flex; align-items: center; gap: 5px; align-self: center; height: 22px; padding: 0 8px 0 3px; border-radius: 999px; background: oklch(0.75 0.11 260 / .18); color: var(--info-ink); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.author img { width: 16px; height: 16px; border-radius: 50%; background: var(--raise); }
+.row { display: flex; flex-wrap: wrap; gap: 16px; padding: 14px 16px; align-items: flex-start; }
+.row > .dot { margin-top: 7px; }
+.pr-main { flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.pr-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
+.pr-title { font-size: 15px; font-weight: 600; color: var(--text); text-decoration: none; text-wrap: pretty; overflow-wrap: anywhere; }
+.pr-title:hover { color: #fff; text-decoration: underline; }
+.pr-num { font-family: var(--mono); font-size: 12px; color: var(--dim); }
+.pr-num a { color: inherit; text-decoration: none; }
+.pr-num a:hover { color: var(--text); text-decoration: underline; }
+.pr-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.branch { display: inline-block; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; font-family: var(--mono); font-size: 12px; }
+.threads { color: var(--warn-ink); }
+.fails { display: flex; flex-wrap: wrap; gap: 12px; font-family: var(--mono); font-size: 12px; }
+.fails a, .fails span { color: var(--bad-ink); text-decoration: none; }
 .fails a:hover { text-decoration: underline; }
-.pr-acts { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 6px; flex-shrink: 0; max-width: 56%; position: relative; }
-.pr-acts .btn { border-radius: 999px; font-size: 13px; }
-.pr-acts .btn-icon { border-radius: 50%; }
-.pr-acts .btn-ghost { color: var(--color-neutral-700); }
-.done-label { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; color: var(--color-accent-2-700); padding: 0 12px; border: none; background: none; font-family: var(--font-body); cursor: pointer; }
-.done-label[disabled] { cursor: default; }
+.pr-acts { position: relative; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
 
-/* The card and bucket holding an open menu sit above their later siblings, which would paint over it. */
-.pr:has(.menu), .bucket:has(.menu) { position: relative; z-index: 30; }
-.menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 230px; background: var(--color-neutral-100); border-radius: var(--radius-md); box-shadow: var(--shadow-lg); padding: 8px; display: flex; flex-direction: column; }
-.menu button, .menu a { all: unset; cursor: pointer; padding: 9px 12px; border-radius: 12px; font-size: 14px; color: var(--color-text); }
-.menu button:hover, .menu a:hover { background: var(--color-neutral-200); color: var(--color-text); }
-.menu button:focus-visible, .menu a:focus-visible { outline: 2px solid var(--color-accent); }
-.menu .sep { height: 1px; background: var(--color-divider); margin: 6px 8px; }
-.menu .danger { color: var(--color-accent-700); }
+/* the runs strip under a row */
+.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 0 16px 12px 40px; color: var(--sub); }
+.strip .btn { height: 24px; }
+.strip-toggle { padding: 0 6px 0 2px; color: var(--sub); }
+.strip-toggle b { font-weight: 600; }
+.strip-toggle svg { transition: transform .2s; }
+.strip-toggle[aria-expanded="false"] svg { transform: rotate(-90deg); }
+.chip { all: unset; cursor: pointer; display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; border-radius: 6px; }
+.chip:hover { color: #fff; }
+.chip:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.chip .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 520px; }
+.chip.working .dot { animation: pulse 1.4s ease-in-out infinite; }
 
-/* Row details: branch, last activity, who it waits on, and what Claude last did on it. */
-.pr-sub { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--color-neutral-700); }
-.pr-sub .branch { font-family: "JetBrains Mono", monospace; font-size: 11.5px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pr-sub .threads { color: var(--color-accent-700); font-weight: 600; }
-.pr-last { all: unset; cursor: pointer; font-size: 12.5px; color: var(--color-accent-2-700); display: flex; gap: 6px; align-items: baseline; max-width: 100%; }
-.pr-last:hover { text-decoration: underline; }
-.pr-last span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pr-last.failed { color: var(--color-accent-700); }
-.hero-line.failed { color: var(--color-accent-200); }
+/* row menu. The row and group holding an open menu sit above their later siblings, which would paint over it. */
+.pr:has(.menu), .group:has(.menu) { z-index: 30; }
+.menu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 240px; padding: 6px; display: flex; flex-direction: column; background: var(--raise); border: 1px solid var(--line-strong); border-radius: 10px; box-shadow: var(--shadow); }
+.menu button, .menu a { all: unset; cursor: pointer; padding: 8px 10px; border-radius: 6px; font-size: 13px; color: var(--text); }
+.menu button:hover, .menu a:hover { background: var(--hover); color: #fff; }
+.menu button:focus-visible, .menu a:focus-visible { outline: 2px solid var(--primary); }
+.menu .sep { height: 1px; background: var(--line); margin: 6px 4px; }
+.menu .danger { color: var(--bad-ink); }
 
-/* Claude panel */
-.panel { flex: 1 1 340px; max-width: 420px; position: sticky; top: 156px; background: var(--color-accent-2-700); color: var(--color-neutral-100); border-radius: var(--radius-lg); padding: 22px; display: flex; flex-direction: column; gap: 14px; max-height: calc(100vh - 160px); overflow: auto; }
-.panel-head { display: flex; align-items: baseline; gap: 10px; }
-.panel-head h2 { margin: 0; font-size: 22px; margin-right: auto; }
-.panel-head span { font-size: 13px; color: var(--color-accent-2-200); }
-.no-runs { font-size: 13px; color: var(--color-accent-2-100); padding: 8px 4px; }
-.run { background: var(--color-neutral-100); color: var(--color-text); border-radius: var(--radius-md); display: flex; flex-direction: column; transition: box-shadow .3s, transform .2s; }
-.run:hover { transform: translateY(-1px); }
-.run.flash { box-shadow: 0 0 0 3px var(--color-accent-300); }
-.run-toggle { all: unset; cursor: pointer; padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; border-radius: var(--radius-md); }
-.run-toggle:focus-visible { outline: 2px solid var(--color-accent); }
+/* run cards: a PR's own runs unfolded under its row, and the triage run inside its card */
+.strip-runs { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px 40px; }
+.hero-run { margin-top: 4px; }
+.run { background: var(--raise); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; transition: box-shadow .3s; }
+.run.flash { box-shadow: 0 0 0 2px var(--primary); }
+.run-toggle { all: unset; cursor: pointer; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; border-radius: 10px; }
+.run-toggle:focus-visible { outline: 2px solid var(--primary); }
 .run-top { display: flex; align-items: center; gap: 8px; }
-.run-dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dot); flex-shrink: 0; }
-.run.working .run-dot { animation: pulse 1.4s ease-in-out infinite; }
-.run-title { font-size: 14px; font-weight: 700; margin-right: auto; overflow-wrap: anywhere; }
-.chev { transition: transform .2s; color: var(--color-neutral-700); flex: none; }
+.run.working .run-top .dot { animation: pulse 1.4s ease-in-out infinite; }
+.run-title { font-size: 13.5px; font-weight: 600; margin-right: auto; overflow-wrap: anywhere; }
+.chev { color: var(--dim); transition: transform .2s; flex: none; }
 .run.open .chev { transform: rotate(180deg); }
-.run-meta { font-size: 12px; color: var(--color-neutral-700); padding-left: 17px; }
-.run-pulse { color: var(--color-accent-2-700); font-weight: 600; }
-.run-preview { font-size: 12.5px; line-height: 1.45; color: var(--color-neutral-800); padding-left: 17px; margin-top: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-.run-body { padding: 0 16px 14px 33px; display: flex; flex-direction: column; gap: 12px; }
-.run-output { font-size: 13px; line-height: 1.55; color: var(--color-neutral-900); text-wrap: pretty; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
-.run-output code, .log code { font-family: "JetBrains Mono", monospace; font-size: 11.5px; background: var(--color-neutral-200); padding: 0 4px; border-radius: 4px; }
-.run-cwd { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--color-neutral-700); overflow-wrap: anywhere; }
+.run-meta { font-size: 12px; color: var(--dim); padding-left: 16px; }
+.run-pulse { color: var(--ok-ink); font-weight: 600; }
+.run-preview { font-size: 12.5px; line-height: 1.45; color: var(--sub); padding-left: 16px; margin-top: 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.run-body { padding: 0 14px 14px 30px; display: flex; flex-direction: column; gap: 10px; }
+.run-output { font-size: 13px; line-height: 1.55; text-wrap: pretty; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
+.run-output code, .log code { background: var(--bg); padding: 0 4px; border-radius: 4px; font-size: 11.5px; }
+.run-cwd { font-family: var(--mono); font-size: 11px; color: var(--dim); overflow-wrap: anywhere; }
 .run-acts { display: flex; gap: 6px; flex-wrap: wrap; }
-.run-acts .btn { border-radius: 999px; font-size: 12px; padding: 6px 12px; }
-.run-acts .btn-ghost { padding: 6px 10px; color: var(--color-neutral-800); }
-.log { max-height: 300px; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 12px; background: var(--color-neutral-200); font-size: 12.5px; line-height: 1.5; }
+.log { max-height: 320px; overflow: auto; display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border-radius: 8px; background: var(--bg); font-size: 12.5px; line-height: 1.5; }
 .ev-text, .ev-result { white-space: pre-wrap; overflow-wrap: anywhere; }
-.ev-result { background: var(--color-neutral-100); padding: 8px 10px; border-radius: 10px; }
-.ev-tool, .ev-warn { font-family: "JetBrains Mono", monospace; font-size: 11px; color: var(--color-neutral-700); overflow-wrap: anywhere; }
-.ev-tool::before { content: "› "; color: var(--color-accent); }
-.ev-warn { color: var(--color-accent-700); }
-.ev-error { color: var(--color-accent-700); font-weight: 600; overflow-wrap: anywhere; }
-.ev-note { font-size: 11px; color: var(--color-neutral-600); }
-.ev-you { align-self: flex-end; max-width: 88%; background: var(--color-accent-2-600); color: var(--color-neutral-100); padding: 6px 10px; border-radius: 12px 12px 4px 12px; white-space: pre-wrap; }
+.ev-result { background: var(--panel); padding: 8px 10px; border-radius: 8px; }
+.ev-tool, .ev-warn { font-family: var(--mono); font-size: 11px; color: var(--dim); overflow-wrap: anywhere; }
+.ev-tool::before { content: "› "; color: var(--link); }
+.ev-warn { color: var(--warn-ink); }
+.ev-error { color: var(--bad-ink); font-weight: 600; overflow-wrap: anywhere; }
+.ev-note { font-size: 11px; color: var(--dim); }
+.ev-you { align-self: flex-end; max-width: 88%; background: oklch(0.36 0.05 155); padding: 6px 10px; border-radius: 10px 10px 4px 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reply { display: flex; flex-direction: column; gap: 8px; }
 .reply textarea { min-height: 72px; }
 
-/* dialogs, from the system's .dialog */
-.dialog-backdrop { z-index: 50; }
-.dialog { width: min(520px, 100%); }
-.dialog ul { margin: 0; padding-left: 18px; font-size: 14px; display: flex; flex-direction: column; gap: 4px; }
-.dialog ul span { color: var(--color-neutral-700); }
-.dialog .btn { border-radius: 999px; }
+/* dialogs */
+.dialog-backdrop { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; padding: 16px; background: oklch(0.12 0.03 155 / .65); }
+.dialog { width: min(520px, 100%); max-height: calc(100vh - 32px); overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 20px; border-radius: 14px; background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow); }
+.dialog-title { font-family: var(--display); font-size: 18px; font-weight: 600; }
+.dialog-body { font-size: 13.5px; line-height: 1.55; color: var(--sub); }
+.dialog-body b { color: var(--text); }
+.dialog-body code { background: var(--bg); padding: 0 5px; border-radius: 4px; color: var(--text); }
+.dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.dialog ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--text); }
+.dialog ul span { color: var(--sub); }
 .quick { display: flex; gap: 6px; flex-wrap: wrap; }
-.quick .btn { font-family: var(--font-body); font-size: 12.5px; padding: 6px 12px; }
 .ship-list { display: flex; flex-direction: column; gap: 10px; max-height: 52vh; overflow: auto; }
-.ship-repo { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: var(--radius-md); background: var(--color-neutral-200); }
-.ship-repo .head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-weight: 700; }
-.ship-repo p { margin: 0; font-size: 13px; line-height: 1.5; color: var(--color-neutral-800); }
-.ship-repo .check { align-items: flex-start; color: var(--color-neutral-900); }
+.ship-repo { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
+.ship-repo .head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; font-weight: 700; color: var(--text); }
+.ship-repo p { font-size: 13px; line-height: 1.5; }
+.ship-repo .check { align-items: flex-start; color: var(--text); }
 .ship-repo .check input { margin-top: 2px; flex: none; }
-.admin-warn { margin: 0; padding: 10px 14px; border-radius: var(--radius-md); background: var(--color-accent-100); color: var(--color-accent-800); font-size: 13px; line-height: 1.5; }
-.btn-admin { background: var(--color-accent-700); color: var(--color-neutral-100); }
-.btn-admin:hover:not(:disabled) { background: var(--color-accent-800); }
-.check { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--color-neutral-700); cursor: pointer; }
-.check input { accent-color: var(--color-accent); width: 16px; height: 16px; }
+.admin-warn { padding: 10px 14px; border-radius: 10px; background: oklch(0.72 0.17 25 / .14); border: 1px solid oklch(0.72 0.17 25 / .35); color: var(--bad-ink); font-size: 13px; line-height: 1.5; }
+.admin-warn b { color: var(--bad-ink); }
 
-.toasts { position: fixed; left: 24px; bottom: 24px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
-.toast { background: var(--color-neutral-900); color: var(--color-neutral-100); padding: 10px 18px; border-radius: 999px; box-shadow: var(--shadow-lg); font-size: 14px; max-width: 460px; }
-.toast.err { background: var(--color-accent-700); }
-.toast a { color: var(--color-accent-300); font-weight: 600; margin-left: 8px; }
+.toasts { position: fixed; left: 24px; bottom: 24px; z-index: 60; display: flex; flex-direction: column; gap: 8px; }
+.toast { max-width: 460px; padding: 9px 16px; border-radius: 10px; background: var(--primary); color: var(--primary-ink); box-shadow: var(--shadow); font-size: 13px; font-weight: 500; }
+.toast.err { background: oklch(0.38 0.1 25); color: var(--text); }
+.toast a { color: inherit; font-weight: 700; margin-left: 8px; }
 
 @media (max-width: 760px) {
-  .top-row, .filters, .layout, .notice { padding-left: 16px; padding-right: 16px; }
-  .hero { padding: 22px; }
-  .hero-line { font-size: 20px; }
-  .pr { flex-direction: column; align-items: stretch; }
-  .pr-acts { max-width: none; justify-content: flex-start; }
-  .panel { position: static; max-width: none; max-height: none; }
+  .wrap { padding-inline: 16px; }
+  .top { position: static; }
+  /* The dot stays beside the title; the buttons take their own line under it. */
+  .pr-main { flex-basis: 0; }
+  .pr-acts { flex-basis: 100%; justify-content: flex-start; padding-left: 24px; }
+  .chip .t { max-width: 70vw; }
+  .strip-runs { padding-left: 16px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
 </style>
 </head>
 <body>
 <header class="top">
-  <div class="top-row">
-    <div class="brand"><h1>PR Inbox</h1><span class="who" id="who"></span></div>
-    <span class="updated" id="updated"></span>
-    <button class="btn btn-secondary btn-dark" id="refresh-btn" data-act="refresh" title="Refresh (⌘R)"><span data-icon="refresh"></span>Refresh</button>
+  <div class="wrap top-row">
+    <div class="logo" aria-hidden="true"><svg viewBox="0 0 637.62 640.32" width="18" height="18"><path fill="#111" d="M259.12,400.64l-79.78,79.78V267.67c0-17.73,6.75-33.33,17.73-44.32l62.05-62.05V400.64z"/><path fill="#111" d="M458.54,320.86H338.9l-79.78,79.78h93.04c15.35-0.09,33.43-6.9,44.32-17.73L458.54,320.86z"/></svg></div>
+    <h1>PR inbox</h1>
+    <span class="sub" id="who"></span>
+    <div class="grow"></div>
+    <span class="dim updated" id="updated"></span>
+    <button class="btn" id="refresh-btn" data-act="refresh" title="Refresh (⌘R)"><span data-icon="refresh"></span>Refresh</button>
     <button class="btn btn-primary" data-act="triage"><span data-icon="sparkle"></span>Triage with Claude</button>
   </div>
-  <div class="filters" id="filters"></div>
+  <div class="wrap filters" id="filters"></div>
 </header>
 <div id="notice"></div>
-<div class="layout">
-  <main id="board"></main>
-  <aside class="panel" id="panel" aria-label="Claude runs">
-    <div class="panel-head"><h2>Claude</h2><span id="runs-meta"></span></div>
-    <div id="runs" style="display:flex;flex-direction:column;gap:14px"></div>
-  </aside>
-</div>
+<main class="wrap board" id="board"></main>
 <div id="dialog"></div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script>
-// Lucide icons at stroke-width 2.75, as the Organic system asks.
+// Lucide icons at stroke-width 2.
 const ICON = {
   refresh: '<path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>',
-  sparkle: '<path d="M12 3l1.9 5.8L20 10.6l-5 3.6 1.9 6.1L12 16.6l-4.9 3.7 1.9-6.1-5-3.6 6.1-1.8z"/>',
+  sparkle: '<path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z"/>',
+  alert: '<circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/>',
   chat: '<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',
   more: '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
   check: '<path d="M20 6 9 17l-5-5"/>',
@@ -272,7 +315,7 @@ const ICON = {
   shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
   rocket: '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
 }
-const icon = (name, size = 16, cls = '') => `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name]}</svg>`
+const icon = (name, size = 16, cls = '') => `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name]}</svg>`
 
 const DAY = 86400000
 const plural = (n, one, many = one + 's') => `${n} ${n === 1 ? one : many}`
@@ -287,6 +330,8 @@ const ADDRESS = 'Address the review comments on this PR. Read every unresolved r
 const VERBS = {
   fix: { menu: 'Fix CI with Claude', run: 'fix', writes: true },
   rebase: { menu: 'Rebase with Claude', run: 'rebase', writes: true },
+  // One run: resolve the conflicts and push, then the thermo-nuclear review of the result.
+  resolve: { menu: 'Resolve conflicts, then review', run: 'resolve', writes: true, mine: true, when: pr => pr.mergeable === 'CONFLICTING' },
   review: { menu: 'Review with Claude', run: 'review' },
   thermo: { menu: 'Thermo-nuclear review', run: 'thermo', writes: true, mine: true },
   relevance: { menu: 'Still relevant? Close or rescue', run: 'relevance', writes: true, mine: true, confirm: {
@@ -314,35 +359,38 @@ const VERBS = {
 const can = (v, pr, mine) => { const V = VERBS[v]; return (!V.writes || pr.writable) && (!V.mine || mine) && (!V.when || V.when(pr)) }
 
 // One model per bucket: the server decides each PR's lane; the bucket says what you can do with it.
-// `action` is [label, class, verb] for the row's primary button; `bulk` runs its verb on the whole bucket.
+// `action` is [label, verb] for the row's primary button; `bulk` runs its verb on the whole bucket.
 const LANES = [
-  { id: 'ready', label: 'Ready to merge', hint: 'Mergeable, nothing GitHub requires is missing.', dot: 'var(--color-accent-2-600)', ink: 'var(--color-neutral-100)',
-    action: ['Merge', 'btn-primary', 'merge'], bulk: { label: 'Merge all', verb: 'merge' } },
-  { id: 'waiting', label: 'Waiting on you', hint: 'Someone asked for your review.', dot: 'var(--color-accent)', ink: 'var(--color-neutral-900)',
-    action: ['Review with Claude', 'btn-primary', 'review'], bulk: { label: 'Review all with Claude', verb: 'review' } },
-  { id: 'fix', label: 'Fix CI', hint: 'A required check failed. Claude reads the log and fixes it.', dot: 'var(--color-accent-500)', ink: 'var(--color-neutral-100)',
-    action: ['Fix CI with Claude', 'btn-primary', 'fix'], bulk: { label: 'Fix all with Claude', verb: 'fix' },
+  { id: 'ready', label: 'Ready to merge', hint: 'Mergeable, nothing GitHub requires is missing.', dot: 'var(--ok)',
+    action: ['Merge', 'merge'], bulk: { label: 'Merge all', verb: 'merge' } },
+  { id: 'waiting', label: 'Waiting on you', hint: 'Someone asked for your review.', dot: 'var(--info)',
+    action: ['Review with Claude', 'review'], bulk: { label: 'Review all with Claude', verb: 'review' } },
+  { id: 'fix', label: 'Fix CI', hint: 'A required check failed. Claude reads the log and fixes it.', dot: 'var(--bad)',
+    action: ['Fix CI with Claude', 'fix'], bulk: { label: 'Fix all with Claude', verb: 'fix' },
     quick: [['CI is failing here, fix it', true], ['Is this failure caused by my PR or by main?', false]] },
-  { id: 'changes', label: 'Changes requested', hint: 'A reviewer asked for changes.', dot: 'var(--color-accent-600)', ink: 'var(--color-neutral-100)',
-    action: ['Address with Claude', 'btn-primary', 'address'],
+  { id: 'changes', label: 'Changes requested', hint: 'A reviewer asked for changes.', dot: 'var(--bad)',
+    action: ['Address with Claude', 'address'],
     quick: [['Address the review comments', true], ['Summarise what the reviewers asked for', false]] },
-  { id: 'behind', label: 'Update branch', hint: 'Green, but behind its base.', dot: 'var(--color-accent-2-300)', ink: 'var(--color-accent-2-900)',
-    action: ['Update branch', 'btn-secondary', 'update'], bulk: { label: 'Update all', verb: 'update' } },
-  { id: 'conflict', label: 'Resolve conflicts', hint: 'Conflicts with its base branch.', dot: 'var(--color-accent-700)', ink: 'var(--color-neutral-100)',
-    action: ['Rebase with Claude', 'btn-secondary', 'rebase'], bulk: { label: 'Rebase all with Claude', verb: 'rebase' },
+  { id: 'behind', label: 'Update branch', hint: 'Green, but behind its base.', dot: 'var(--warn)',
+    action: ['Update branch', 'update'], bulk: { label: 'Update all', verb: 'update' } },
+  { id: 'conflict', label: 'Resolve conflicts', hint: 'Conflicts with its base branch.', dot: 'var(--warn)',
+    action: ['Resolve with Claude', 'rebase'], bulk: { label: 'Rebase all with Claude', verb: 'rebase' },
     quick: [['Rebase onto main and fix the conflicts', true], ['Summarise what conflicts with main', false]] },
-  { id: 'review', label: 'Needs approval', hint: 'Waiting for a reviewer or another merge rule.', dot: 'var(--color-accent-2-500)', ink: 'var(--color-neutral-100)' },
-  { id: 'checking', label: 'CI running', hint: 'Checks are running, GitHub is still working out mergeability, or no check has reported yet.', dot: 'var(--color-neutral-500)', ink: 'var(--color-neutral-100)' },
-  { id: 'draft', label: 'Drafts', hint: 'Yours, not marked ready.', dot: 'var(--color-neutral-400)', ink: 'var(--color-neutral-900)',
-    action: ['Mark ready', 'btn-secondary', 'ready'] },
-  { id: 'stale', label: 'Close or revive', hint: 'Stuck for a week or more.', dot: 'var(--color-neutral-700)', ink: 'var(--color-neutral-100)',
-    action: ['Still relevant?', 'btn-primary', 'relevance'], bulk: { label: 'Check all with Claude', verb: 'relevance' } },
+  { id: 'review', label: 'Needs approval', hint: 'Waiting for a reviewer or another merge rule.', dot: 'var(--approval)' },
+  { id: 'checking', label: 'CI running', hint: 'Checks are running, GitHub is still working out mergeability, or no check has reported yet.', dot: 'var(--sub)' },
+  { id: 'draft', label: 'Drafts', hint: 'Yours, not marked ready.', dot: 'var(--mute)',
+    action: ['Mark ready', 'ready'] },
+  { id: 'stale', label: 'Close or revive', hint: 'Stuck for a week or more.', dot: 'var(--stale)',
+    action: ['Still relevant?', 'relevance'], bulk: { label: 'Check all with Claude', verb: 'relevance' } },
 ]
 const LANE = Object.fromEntries(LANES.map(l => [l.id, l]))
-// Per run kind: what a PR's row says while the run works on it, and what it calls the last finished one.
-const KIND = { fix: ['Fixing CI', 'CI fix'], rebase: ['Rebasing', 'Rebase'], review: ['Review started', 'Review'], thermo: ['Reviewing code', 'Thermo review'],
+// Per run kind: what a PR's row says while the run works on it, and what it calls a finished one.
+const KIND = { fix: ['Fixing CI', 'Fix CI'], rebase: ['Rebasing', 'Rebase'], review: ['Review started', 'Review'], thermo: ['Reviewing code', 'Thermo review'], resolve: ['Resolving, then reviewing', 'Resolve & review'],
   relevance: ['Checking relevance', 'Relevance check'], ask: ['Claude working', 'Claude request'], task: ['Claude working', 'Claude request'] }
-const RUN_DOT = { done: 'var(--color-accent-2-600)', running: 'var(--color-accent)', queued: 'var(--color-accent)', failed: 'var(--color-accent-700)', stopped: 'var(--color-neutral-500)', interrupted: 'var(--color-neutral-500)' }
+const RUN_DOT = { done: 'var(--ok)', running: 'var(--info)', queued: 'var(--info)', failed: 'var(--bad)', stopped: 'var(--mute)', interrupted: 'var(--mute)' }
+// Retry starts these kinds fresh from the PR, so a run whose directory is gone gets today's worktree; a request
+// in your own words resumes its run instead.
+const FRESH = ['fix', 'rebase', 'review', 'thermo', 'relevance', 'resolve']
 
 // Per-viewer preferences; storage can be missing (private window) and the page works without it.
 const recall = key => { try { return localStorage.getItem(`pr-inbox:${key}`) } catch { return null } }
@@ -353,10 +401,12 @@ const S = {
   data: null, runs: [], health: null, loading: false, error: null,
   // How each of your repos releases (from /api/releases), why one could not be checked, and releases in flight.
   plans: {}, planErrors: {}, releasing: {},
-  group: recall('group') === 'repo' ? 'repo' : 'lane', lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: undefined, logOpen: {}, fullLog: {}, flash: null,
+  group: recall('group') === 'repo' ? 'repo' : 'lane', lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
+  // The PRs whose runs show as cards under the row instead of the newest one on a line.
+  runsOpen: {},
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
   // Motion bookkeeping: what has already been on screen, so a re-render never replays an entrance.
-  seen: new Set(), counts: {}, heroKey: null,
+  seen: new Set(), heroKey: null,
 }
 
 // True the first time `key` comes up, false every time after.
@@ -383,7 +433,8 @@ const httpsOnly = url => /^https:\/\//.test(url || '') ? url : null
 const keyOf = pr => `${pr.repo}#${pr.number}`
 const short = pr => `${pr.name}#${pr.number}`
 const days = iso => Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / DAY))
-const age = pr => days(pr.createdAt) === 0 ? 'today' : `${days(pr.createdAt)}d old`
+const age = pr => days(pr.createdAt) === 0 ? 'today' : `${days(pr.createdAt)}d`
+const tilde = path => path.replace(/^\/Users\/[^/]+/, '~')
 const active = r => r.status === 'running' || r.status === 'queued'
 const inline = text => esc(text)
   .replace(/\[([^\]\n]+)\]\((https:\/\/[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>')
@@ -442,8 +493,14 @@ function allPrs() {
 
 const findPr = k => allPrs().find(pr => keyOf(pr) === k)
 const runFor = pr => S.runs.find(r => r.prUrl === pr.url && active(r))
-// The last finished run on a PR in the past two days, so the row remembers what Claude did.
-const lastRunFor = pr => S.runs.find(r => r.prUrl === pr.url && !active(r) && Date.now() - (r.endedAt || r.startedAt) < 2 * DAY)
+// A PR's runs, newest first, as the server lists them.
+const runsOf = pr => S.runs.filter(r => r.prUrl === pr.url)
+// The runs whose kind last failed or was cut off on this PR: what its Retry starts again.
+function retryable(pr) {
+  const latest = new Map()
+  for (const r of runsOf(pr)) if (!latest.has(r.kind)) latest.set(r.kind, r)
+  return [...latest.values()].filter(r => r.status === 'failed' || r.status === 'interrupted')
+}
 const lanePrs = id => allPrs().filter(pr => pr.lane === id).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
 // A finished gh action keeps its row dimmed with a check for two minutes, then the row follows GitHub again.
 const doneFor = k => S.done[k] && Date.now() - S.done[k].at < 120000 ? S.done[k].label : null
@@ -472,33 +529,39 @@ const leftOut = repo => S.data.mine.filter(pr => pr.repo === repo && pr.lane !==
 const leftOutText = prs => prs.map(pr => `#${pr.number} (${pr.lane === 'ready' ? 'ready, not in this batch' : blockers(pr)}${pr.adminMergeable ? '; admin merge possible' : ''})`).join(', ')
 // What Claude said last in a run: its result, or the error it ended on.
 const lastSaid = r => r.events.findLast(e => e.kind === 'result' || e.kind === 'error')
+// That, in a few words: a run that could not start in a missing directory names the directory.
+function reason(r) {
+  const said = lastSaid(r)?.text || ''
+  const gone = said.match(/directory is gone \(([^)]+)\)/)
+  return gone ? `${tilde(gone[1])} missing` : firstLine(said)
+}
 
 // ---------- header and notices ----------
 
 function renderHeader() {
-  $('#who').textContent = S.data ? `@${S.data.login}` : ''
+  const items = allPrs()
+  $('#who').textContent = S.data ? `@${S.data.login} · ${items.length} open across ${plural(new Set(items.map(pr => pr.repo)).size, 'repo')}` : ''
   $('#refresh-btn').classList.toggle('spinning', S.loading)
   $('#updated').innerHTML = S.loading ? '<span class="spin" aria-label="Refreshing"></span>Refreshing' : S.data ? `Updated ${ago(S.data.fetchedAt)}` : ''
-  const items = allPrs()
-  const pills = [{ id: 'all', label: 'All', dot: 'var(--color-neutral-100)', n: items.length }]
+  const pills = [{ id: 'all', label: 'All', n: items.length }]
     .concat(LANES.map(l => ({ ...l, n: items.filter(p => p.lane === l.id).length })).filter(l => l.n))
   // A bucket that emptied takes its filter with it, so the board never looks empty behind a hidden filter.
   if (S.data && !pills.some(p => p.id === S.lane)) S.lane = 'all'
-  const group = `<div class="group-by" role="group" aria-label="Group pull requests"><span class="label">Group by</span>${[['lane', 'Status'], ['repo', 'Repository']]
-    .map(([id, label]) => `<button data-act="group" data-group="${id}" aria-pressed="${S.group === id}" title="Group by ${label.toLowerCase()} (G)">${label}</button>`).join('')}</div>`
-  $('#filters').innerHTML = pills.map(f => `<button class="filter" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}" style="--dot:${f.dot}"><span class="dot"></span>${esc(f.label)}<span class="n">${f.n}</span></button>`).join('') + group
+  const group = `<div class="group-by" role="group" aria-label="Group pull requests"><span class="sub">Group by</span>${[['lane', 'Status'], ['repo', 'Repository']]
+    .map(([id, label]) => `<button class="btn btn-sm${S.group === id ? '' : ' btn-ghost'}" data-act="group" data-group="${id}" aria-pressed="${S.group === id}" title="Group by ${label.toLowerCase()} (G)">${label}</button>`).join('')}</div>`
+  $('#filters').innerHTML = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('') + '<div class="grow"></div>' + group
 }
 
 function renderNotice() {
   const h = S.health
-  const box = (text, buttons = '') => `<div class="notice"><div><span>${text}</span><span style="display:flex;gap:8px">${buttons}</span></div></div>`
-  const recheck = '<button class="btn btn-secondary" data-act="recheck">I\'ve signed in</button>'
+  const box = (title, detail = '', buttons = '') => `<div class="wrap notice"><div class="notice-box" role="status">${icon('alert')}<div class="notice-text"><strong>${title}</strong> <span class="sub">${detail}</span></div>${buttons}</div></div>`
+  const recheck = '<button class="btn btn-sm btn-ghost" data-act="recheck">I\'ve signed in</button>'
   $('#notice').innerHTML =
-    h && !h.gh.ok ? box(`The GitHub CLI cannot reach GitHub (${esc(h.gh.error || 'gh is missing or signed out')}), so PRs cannot load.`, `<button class="btn btn-primary" data-act="login" data-tool="gh">Sign in to GitHub</button>${recheck}`)
-    : S.error ? box(`Could not load pull requests: ${esc(S.error)}`, '<button class="btn btn-secondary" data-act="refresh">Try again</button>')
-    : h && !h.claude.installed ? box('The <code>claude</code> command was not found, so Claude runs cannot start.')
-    : h && !h.claude.loggedIn ? box('The Claude CLI on this Mac is signed out, so Claude runs cannot start.', `<button class="btn btn-primary" data-act="login" data-tool="claude">Sign in to Claude</button>${recheck}`)
-    : S.data?.warning ? box(`Some PRs could not be loaded: ${esc(S.data.warning)}`)
+    h && !h.gh.ok ? box('The GitHub CLI cannot reach GitHub, so PRs cannot load.', esc(h.gh.error || 'gh is missing or signed out'), `<button class="btn btn-sm btn-primary" data-act="login" data-tool="gh">Sign in to GitHub</button>${recheck}`)
+    : S.error ? box('Could not load pull requests.', esc(S.error), '<button class="btn btn-sm" data-act="refresh">Try again</button>')
+    : h && !h.claude.installed ? box('The <code>claude</code> command was not found.', 'Claude runs cannot start.')
+    : h && !h.claude.loggedIn ? box('Claude is signed out on this Mac.', 'Claude runs cannot start.', `<button class="btn btn-sm btn-primary" data-act="login" data-tool="claude">Sign in</button>${recheck}`)
+    : S.data?.warning ? box('Some PRs could not be loaded.', esc(S.data.warning))
     : ''
 }
 
@@ -522,7 +585,8 @@ function hero() {
   const key = o ? `${o.id}:${o.status}` : 'none'
   const fresh = key !== S.heroKey
   S.heroKey = key
-  return `<section class="hero${fresh ? ' enter' : ''}">${heroBody(o)}</section>`
+  const card = o && S.openRun === o.id ? `<div class="hero-run">${runCard(o)}</div>` : ''
+  return `<section class="hero panel${fresh ? ' enter' : ''}">${heroBody(o)}${card}</section>`
 }
 
 function heroBody(o) {
@@ -532,7 +596,8 @@ function heroBody(o) {
     return `${kicker(name)}<p class="hero-line">No triage yet. Claude reads every PR and tells you where to start.</p>
       <div class="hero-acts"><button class="hero-link" data-act="triage">Triage with Claude now</button><span class="hero-label">The morning summary runs at ${esc(S.health?.morning || '08:00')}.</span></div>`
   }
-  if (active(o)) return `${kicker(`${name} · started ${ago(o.startedAt)}`, true)}<p class="hero-line">Claude is going through your PRs.</p>`
+  if (active(o)) return `${kicker(`${name} · started ${ago(o.startedAt)}`, true)}<p class="hero-line">Claude is going through your PRs.</p>
+    <div class="hero-acts"><button class="hero-link" data-act="show-run" data-run="${esc(o.id)}">Show progress</button></div>`
   const result = lastSaid(o)
   if (!result || result.kind === 'error') {
     const why = result ? `: ${firstLine(result.text)}` : ` (${o.status})`
@@ -550,22 +615,24 @@ function heroBody(o) {
 
 // ---------- buckets ----------
 
-function tags(pr, lane) {
+// `byRepo`: no lane heading above the row says it is ready or waiting on you, so a tag does.
+function tags(pr, lane, byRepo) {
   const out = []
   const tag = (label, cls, title = '') => out.push(`<span class="tag ${cls}"${title ? ` title="${esc(title)}"` : ''}>${label}</span>`)
-  if (pr.ci === 'fail' && pr.mergeState === 'UNSTABLE') tag('Optional check failing', 'tag-outline', 'GitHub does not require this check; the PR can still merge')
-  else ({ pass: () => tag('CI passing', 'tag-accent-2'), fail: () => tag('CI failing', 'tag-accent'), running: () => tag('CI running', 'tag-neutral'), none: () => tag('No checks', 'tag-neutral') })[pr.ci]()
-  if (pr.mergeable === 'CONFLICTING') tag('Conflicts', 'tag-accent')
-  if (pr.mergeState === 'BEHIND') tag('Behind base', 'tag-neutral')
-  if (pr.review === 'REVIEW_REQUIRED') tag('Needs approval', 'tag-neutral')
-  if (pr.review === 'CHANGES_REQUESTED') tag('Changes requested', 'tag-accent')
-  if (pr.review === 'APPROVED') tag('Approved', 'tag-accent-2')
-  if (pr.isDraft) tag('Draft', 'tag-neutral')
-  if (pr.isCrossRepo) tag('From a fork', 'tag-outline', 'Claude runs that change code are off for fork PRs')
-  if (lane !== 'waiting') {
-    const { state, tip } = review(pr)
-    tag(...{ none: ['Not reviewed', 'tag-neutral'], outdated: ['Review outdated', 'tag-outline'], pass: ['✓ Review passed', 'tag-accent-2'], fail: ['✕ Review failed', 'tag-accent'] }[state], tip)
-  }
+  if (byRepo && lane === 'ready') tag('Ready to merge', 'tag-ok')
+  if (byRepo && lane === 'waiting') tag('Your review requested', 'tag-info')
+  if (pr.ci === 'fail' && pr.mergeState === 'UNSTABLE') tag('Optional check failing', 'tag-warn', 'GitHub does not require this check; the PR can still merge')
+  else ({ pass: () => tag('CI passing', 'tag-ok'), fail: () => tag('CI failing', 'tag-bad'), running: () => tag('CI running', 'tag-mute'), none: () => tag('No checks', 'tag-mute') })[pr.ci]()
+  if (pr.mergeable === 'CONFLICTING') tag('Conflicts', 'tag-bad')
+  if (pr.mergeState === 'BEHIND') tag('Behind base', 'tag-warn')
+  if (pr.review === 'REVIEW_REQUIRED') tag('Needs approval', 'tag-mute')
+  if (pr.review === 'CHANGES_REQUESTED') tag('Changes requested', 'tag-bad')
+  if (pr.review === 'APPROVED') tag('Approved', 'tag-ok')
+  if (pr.isDraft) tag('Draft', 'tag-mute')
+  if (pr.isCrossRepo) tag('From a fork', 'tag-mute', 'Claude runs that change code are off for fork PRs')
+  // A thermo-nuclear review shows once one is recorded; the runs strip says when one failed to run.
+  const { state, tip } = lane !== 'waiting' ? review(pr) : { state: 'none' }
+  if (state !== 'none') tag(...{ outdated: ['Review outdated', 'tag-mute'], pass: ['✓ Review passed', 'tag-ok'], fail: ['✕ Review failed', 'tag-bad'] }[state], tip)
   return out.join('')
 }
 
@@ -585,7 +652,7 @@ function shipTip(repo) {
   return p?.method === 'tag' ? `Squash-merge, then release ${p.next} from ${p.branch}` : `Squash-merge, then run ${repoName(repo)}'s release workflow`
 }
 
-// `byRepo`: the row sits in its repository's group, so it names its lane where the repo name would go.
+// `byRepo`: the row sits in its repository's group, so its number goes without the repo name.
 function row(pr, lane, byRepo = false) {
   const k = keyOf(pr)
   const run = runFor(pr)
@@ -596,63 +663,87 @@ function row(pr, lane, byRepo = false) {
   const verbs = vs => vs.filter(v => can(v, pr, mine)).map(v => `<button data-act="verb" data-verb="${v}"${VERBS[v].danger ? ' class="danger"' : ''}>${VERBS[v].menu}</button>`).join('')
   const menu = S.menu !== k ? '' : `<div class="menu" role="menu">
       ${link(pr.url, 'Open on GitHub')}${link(pr.url + '/files', 'View changes')}<div class="sep"></div>
-      ${verbs(['fix', 'rebase', 'review', 'thermo', 'relevance'])}<div class="sep"></div>
+      <button data-act="ask">Ask Claude…</button>${verbs(['fix', 'rebase', 'resolve', 'review', 'thermo', 'relevance'])}<div class="sep"></div>
       ${verbs(['update', 'ready', 'merge', 'ship', 'admin', 'close'])}
     </div>`
   let acts
-  if (S.busy[k]) acts = `<span class="done-label" style="color:var(--color-neutral-700)"><span class="spin"></span>${esc(S.busy[k])}</span>`
-  else if (run) acts = `<button class="done-label" data-act="show-run" data-run="${esc(run.id)}"><span class="spin"></span>${esc(KIND[run.kind]?.[0] || 'Claude working')}</button>`
-  else if (done) acts = `<span class="done-label">${icon('check', 16, first('done:' + k) ? 'pop' : '')}${esc(done)}</span>`
+  if (S.busy[k]) acts = `<span class="state"><span class="spin"></span>${esc(S.busy[k])}</span>`
+  else if (run) acts = `<button class="state" data-act="show-run" data-run="${esc(run.id)}"><span class="spin"></span>${esc(KIND[run.kind]?.[0] || 'Claude working')}</button>`
+  else if (done) acts = `<span class="state ok">${icon('check', 16, first('done:' + k) ? 'pop' : '')}${esc(done)}</span>`
   else {
-    let [label, cls, verb] = lane.action || []
+    let [label, verb] = lane.action || []
     if (verb && !can(verb, pr, mine)) verb = null
-    // On your own PRs: "Still relevant?" always, and the review until the current commit has passed it.
-    const relevance = can('relevance', pr, mine) && verb !== 'relevance' ? `<button class="btn btn-secondary" data-act="verb" data-verb="relevance" title="Claude checks it against today's ${esc(pr.base)}: closes it if it no longer matters, rescues it if it does">Still relevant?</button>` : ''
-    const thermo = can('thermo', pr, mine) && review(pr).state !== 'pass' ? `<button class="btn btn-secondary" data-act="verb" data-verb="thermo" title="Run the thermo-nuclear review on this PR's branch">${icon('sparkle', 14)}Thermo review</button>` : ''
-    const ship = verb === 'merge' && can('ship', pr, mine) ? `<button class="btn btn-secondary" data-act="verb" data-verb="ship" title="${esc(shipTip(pr.repo))}">${icon('rocket', 14)}Merge &amp; release</button>` : ''
-    const admin = can('admin', pr, mine) ? `<button class="btn btn-secondary" data-act="verb" data-verb="admin" title="Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.">${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}</button>` : ''
-    acts = `${verb ? `<button class="btn ${cls}" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${ship}${admin}${relevance}${thermo}
-      <button class="btn btn-secondary btn-icon" data-act="ask" title="Ask Claude" aria-label="Ask Claude about ${esc(short(pr))}">${icon('chat')}</button>
+    // On your own PRs the thermo-nuclear review stays one click away until the current commit has passed it.
+    const thermo = can('thermo', pr, mine) && review(pr).state !== 'pass' ? `<button class="btn" data-act="verb" data-verb="thermo" title="Run the thermo-nuclear review on this PR's branch">${icon('sparkle', 14)}Thermo review</button>` : ''
+    acts = `${verb ? `<button class="btn btn-primary" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${second(pr, verb, mine)}${thermo}
       <button class="btn btn-ghost btn-icon" data-act="menu" title="More" aria-label="More actions" aria-expanded="${S.menu === k}">${icon('more')}</button>${menu}`
   }
-  const sub = [
-    `<span class="branch" title="${esc(pr.head)}">${esc(pr.head)}</span>`,
-    `<span>updated ${esc(ago(Date.parse(pr.updatedAt)))}</span>`,
-    pr.reviewers.length ? `<span>waiting on ${esc(pr.reviewers.map(r => '@' + r).join(', '))}</span>` : '',
+  const info = [
+    `+${pr.additions.toLocaleString()} −${pr.deletions.toLocaleString()}`,
+    plural(pr.files, 'file'),
+    `<span title="Updated ${esc(ago(Date.parse(pr.updatedAt)))}">${age(pr)}</span>`,
+    pr.reviewers.length ? `waiting on ${esc(pr.reviewers.map(r => '@' + r).join(', '))}` : '',
     pr.openThreads ? `<span class="threads">${plural(pr.openThreads, 'open thread')}</span>` : '',
-  ].join('')
-  const last = !run && lastRunFor(pr)
-  const lastLine = last ? `<button class="pr-last${last.status === 'failed' ? ' failed' : ''}" data-act="show-run" data-run="${esc(last.id)}">${icon('sparkle', 12)}<span>${esc(KIND[last.kind]?.[1] || 'Claude run')} ${esc(last.status)} ${esc(ago(last.endedAt || last.startedAt))}: ${esc(firstLine(lastSaid(last)?.text || ''))}</span></button>` : ''
-  return `<article class="pr${done ? ' done' : ''}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
-    <div class="pr-main">
-      <div class="pr-ref">${byRepo ? `<span class="lane-chip" style="--dot:${lane.dot}">${esc(lane.label)}</span>` : link(`https://github.com/${pr.repo}`, esc(pr.name))}<span class="num">#${pr.number}</span></div>
-      ${link(pr.url, esc(pr.title), 'pr-title')}
-      <div class="pr-meta">${tags(pr, lane.id)}<span class="diff"><span class="add">+${pr.additions.toLocaleString()}</span> <span class="del">−${pr.deletions.toLocaleString()}</span></span><span>${plural(pr.files, 'file')}</span><span>${age(pr)}</span>${mine ? '' : `<span>by ${esc(pr.author)}</span>`}</div>
-      <div class="pr-sub">${sub}</div>
-      ${fails ? `<div class="fails">${fails}</div>` : ''}
-      ${lastLine}
+    mine ? `<span class="branch" title="${esc(pr.head)}">${esc(pr.head)}</span>` : '',
+  ].filter(Boolean).join(' · ')
+  const author = mine ? '' : `<span class="author" title="Opened by @${esc(pr.author)}"><img src="https://github.com/${esc(encodeURIComponent(pr.author))}.png?size=40" alt="" loading="lazy" onerror="this.remove()">@${esc(pr.author)}</span>`
+  return `<article class="pr${done ? ' done' : ''}${mine ? '' : ' theirs'}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
+    <div class="row">
+      <span class="dot" style="--dot:${lane.dot}" title="${esc(`${lane.label}. ${lane.hint}`)}"></span>
+      <div class="pr-main">
+        <div class="pr-head">${link(pr.url, esc(pr.title), 'pr-title')}<span class="pr-num">${byRepo ? '' : link(`https://github.com/${pr.repo}`, esc(pr.name))}#${pr.number}</span>${author}</div>
+        <div class="pr-meta">${tags(pr, lane.id, byRepo)}<span class="dim">${info}</span></div>
+        ${fails ? `<div class="fails">${fails}</div>` : ''}
+      </div>
+      <div class="pr-acts">${acts}</div>
     </div>
-    <div class="pr-acts">${acts}</div>
+    ${strip(pr, run)}
   </article>`
 }
 
-function renderBoard() {
-  const board = $('#board')
-  if (!S.data) {
-    board.innerHTML = hero() + (S.error ? '' : '<div class="rows"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>')
-    return
-  }
-  const buckets = S.group === 'repo' ? repoBuckets() : laneBuckets()
-  const empty = `<div class="empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
-  board.innerHTML = hero() + (buckets || empty)
-  animateNew(board)
+// The one button beside the lane's own action: merge and release, resolving conflicts with a review after,
+// an admin merge, or the relevance check, whichever this PR can take, else its GitHub page. Every other
+// action is in the row's menu.
+function second(pr, verb, mine) {
+  if (verb === 'merge' && can('ship', pr, mine)) return `<button class="btn" data-act="verb" data-verb="ship" title="${esc(shipTip(pr.repo))}">${icon('rocket', 14)}Merge &amp; release</button>`
+  if (can('resolve', pr, mine)) return `<button class="btn" data-act="verb" data-verb="resolve" title="One Claude run: merge ${esc(pr.base)} and resolve the conflicts, push, then run the thermo-nuclear review on the result. It stops before the review if the conflicts need you.">${icon('sparkle', 14)}Resolve &amp; review</button>`
+  if (can('admin', pr, mine)) return `<button class="btn" data-act="verb" data-verb="admin" title="Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.">${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}</button>`
+  if (verb !== 'relevance' && can('relevance', pr, mine)) return `<button class="btn" data-act="verb" data-verb="relevance" title="Claude checks it against today's ${esc(pr.base)}: closes it if it no longer matters, rescues it if it does">Still relevant?</button>`
+  return `<a class="btn" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open on GitHub</a>`
 }
 
-// True when a group's PR count changed since the last render, so its count badge bumps.
-function bumped(key, n) {
-  const changed = S.counts[key] !== undefined && S.counts[key] !== n
-  S.counts[key] = n
-  return changed
+const runName = r => KIND[r.kind]?.[1] || 'Claude run'
+
+// The PR's Claude runs under its row, and only this PR's: folded, the newest on one line with how it ended;
+// unfolded, a card per run with its output, log and actions. Retry starts again each kind whose last run failed.
+function strip(pr, run) {
+  const runs = runsOf(pr)
+  if (!runs.length) return '<div class="strip"><span class="dim">No runs yet</span></div>'
+  const open = !!S.runsOpen[keyOf(pr)]
+  const again = !run && idle(pr) ? retryable(pr) : []
+  const retry = again.length ? `<button class="btn btn-sm btn-ghost" data-act="retry-all" title="Start ${esc(again.map(runName).join(', '))} again">${again.length > 1 ? 'Retry all' : 'Retry'}</button>` : ''
+  const toggle = `<button class="btn btn-sm btn-ghost strip-toggle" data-act="runs-toggle" aria-expanded="${open}">${icon('chevron', 14)}<b>${plural(runs.length, 'run')}</b></button>`
+  if (open) return `<div class="strip">${toggle}${retry}</div><div class="strip-runs">${runs.map(runCard).join('')}</div>`
+  const r = runs[0]
+  const text = active(r) ? `${KIND[r.kind]?.[0] || 'Claude working'} · started ${ago(r.startedAt)}` : `${runName(r)} ${r.status} ${ago(r.endedAt || r.startedAt)}`
+  return `<div class="strip">${toggle}<button class="chip${active(r) ? ' working' : ''}" data-act="show-run" data-run="${esc(r.id)}" title="${esc(r.title)}"><span class="dot" style="--dot:${RUN_DOT[r.status] || 'var(--mute)'}"></span><span class="t">${esc(text)}</span></button>${retry}</div>`
+}
+
+// Run cards live on the board, so a redraw keeps the reply you are typing and where each log was scrolled.
+function renderBoard() {
+  const board = $('#board')
+  keepFocus(() => {
+    const scroll = saveScroll(board)
+    board.innerHTML = hero() + boardBody()
+    animateNew(board)
+    restoreScroll(board, scroll)
+  })
+}
+
+function boardBody() {
+  if (!S.data) return S.error ? '' : '<div class="panel"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>'
+  const buckets = S.group === 'repo' ? repoBuckets() : laneBuckets()
+  return buckets || `<div class="panel empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
 }
 
 function laneBuckets() {
@@ -661,11 +752,11 @@ function laneBuckets() {
     if (!list.length) return ''
     const open = actionable(l.id)
     const busy = S.bulkBusy[l.id]
-    const bulk = l.bulk && open.length > 1 && !busy ? `<button class="btn btn-secondary" data-act="bulk-open" data-lane="${l.id}">${esc(l.bulk.label)} ${open.length}</button>` : ''
-    const ship = l.id === 'ready' && !busy && shippable().length > 1 ? `<button class="btn btn-primary" data-act="ship-open">${icon('rocket', 14)}Merge &amp; release ${shippable().length}</button>` : ''
-    return `<section class="bucket" data-enter="lane:${l.id}" id="lane-${l.id}">
-      <div class="bucket-head"><h2>${esc(l.label)}</h2><span class="count${bumped(l.id, list.length) ? ' bump' : ''}" style="--dot:${l.dot};--ink:${l.ink}">${list.length}</span><span class="bucket-hint">${esc(l.hint)}</span><span class="head-acts">${bulk}${ship}</span></div>
-      <div class="rows">${list.map(pr => row(pr, l)).join('')}</div>
+    const bulk = l.bulk && open.length > 1 && !busy ? `<button class="btn btn-sm" data-act="bulk-open" data-lane="${l.id}">${esc(l.bulk.label)} ${open.length}</button>` : ''
+    const ship = l.id === 'ready' && !busy && shippable().length > 1 ? `<button class="btn btn-sm btn-primary" data-act="ship-open">${icon('rocket', 14)}Merge &amp; release ${shippable().length}</button>` : ''
+    return `<section class="group" data-enter="lane:${l.id}" id="lane-${l.id}">
+      <div class="group-head"><span class="dot" style="--dot:${l.dot}"></span><h2>${esc(l.label)}</h2><span class="sub">${plural(list.length, 'PR')} · ${esc(l.hint)}</span><div class="grow"></div><div class="head-acts">${bulk}${ship}</div></div>
+      <div class="panel">${list.map(pr => row(pr, l)).join('')}</div>
     </section>`
   }).join('')
 }
@@ -677,53 +768,52 @@ function repoBuckets() {
   const repos = [...new Set(shown.map(pr => pr.repo))].sort((a, b) => repoName(a).localeCompare(repoName(b)) || a.localeCompare(b))
   return repos.map(repo => {
     const list = shown.filter(pr => pr.repo === repo).sort((a, b) => order[a.lane] - order[b.lane] || Date.parse(a.createdAt) - Date.parse(b.createdAt))
-    const chips = LANES.map(l => [l, list.filter(pr => pr.lane === l.id).length]).filter(([, n]) => n)
-      .map(([l, n]) => `<span class="lane-chip" style="--dot:${l.dot}">${esc(l.label)} ${n}</span>`).join('')
-    const key = `repo:${repo}`
-    return `<section class="bucket" data-enter="${esc(key)}">
-      <div class="bucket-head"><h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer" style="color:inherit;text-decoration:none">${esc(repoName(repo))}</a></h2><span class="count${bumped(key, list.length) ? ' bump' : ''}" style="--dot:var(--color-neutral-900);--ink:var(--color-neutral-100)">${list.length}</span><span class="lanes-in">${chips}</span><span class="head-acts">${repoActions(repo)}</span></div>
-      ${releaseLine(repo)}
-      <div class="rows">${list.map(pr => row(pr, LANE[pr.lane], true)).join('')}</div>
+    const out = releasable(repo) ? leftOut(repo) : []
+    return `<section class="group" data-enter="${esc(`repo:${repo}`)}">
+      <div class="group-head"><h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer">${esc(repoName(repo))}</a></h2><span class="sub">${[`${list.length} open`, ...releaseInfo(repo)].join(' · ')}</span><div class="grow"></div><div class="head-acts">${repoActions(repo)}</div></div>
+      ${out.length ? `<div class="group-note">Not in the next release: ${esc(leftOutText(out))}</div>` : ''}
+      <div class="panel">${list.map(pr => row(pr, LANE[pr.lane], true)).join('')}</div>
     </section>`
   }).join('')
 }
 
 function repoActions(repo) {
-  if (S.releasing[repo]) return '<span class="done-label"><span class="spin"></span>Releasing</span>'
+  if (S.releasing[repo]) return '<span class="state"><span class="spin"></span>Releasing</span>'
   const merge = mergeable(repo)
   const ship = shippable(repo)
   const p = S.plans[repo]
   const repoAttr = `data-repo="${esc(repo)}"`
-  const out = merge.length > 1 ? [`<button class="btn btn-secondary" data-act="merge-repo" ${repoAttr}>Merge ${merge.length}</button>`] : []
-  if (ship.length) out.push(`<button class="btn btn-primary" data-act="ship-open" ${repoAttr}>${icon('rocket', 14)}Merge &amp; release ${ship.length}</button>`)
+  const out = merge.length > 1 ? [`<button class="btn btn-sm" data-act="merge-repo" ${repoAttr}>Merge ${merge.length}</button>`] : []
+  if (ship.length) out.push(`<button class="btn btn-sm btn-primary" data-act="ship-open" ${repoAttr}>${icon('rocket', 14)}Merge &amp; release ${ship.length}</button>`)
   else if (releasable(repo) && p.unreleased > 0) {
     const tip = `Releases the ${plural(p.unreleased, 'commit')} already on ${p.branch}. It merges nothing: open PRs join once they are Ready to merge.`
-    out.push(`<button class="btn btn-secondary" data-act="release-open" ${repoAttr} title="${esc(tip)}">${icon('rocket', 14)}Release${p.next ? ' ' + esc(p.next) : ''}</button>`)
+    out.push(`<button class="btn btn-sm btn-ghost" data-act="release-open" ${repoAttr} title="${esc(tip)}">${icon('rocket', 14)}Release${p.next ? ' ' + esc(p.next) : ''}</button>`)
   }
   return out.join('')
 }
 
-// The repo's release standing: the next tag (or its workflow), the latest one, and what main holds unreleased.
-function releaseLine(repo) {
-  if (!S.data.mine.some(pr => pr.repo === repo)) return ''
+// The repo's release standing for its heading: the next and latest tag (or its workflow), and the commits its
+// branch holds unreleased, linked to GitHub's comparison.
+function releaseInfo(repo) {
+  if (!S.data.mine.some(pr => pr.repo === repo)) return []
   const p = S.plans[repo]
   const ver = v => `<span class="ver">${esc(v)}</span>`
-  let parts
-  if (!p) parts = [esc(S.planErrors[repo] ? `Could not check how ${repoName(repo)} releases: ${S.planErrors[repo]}` : 'Checking how it releases…')]
-  else if (p.method === 'none') parts = ['No releases yet, so it only merges']
-  else parts = [
-    p.method === 'tag' ? `Next release ${ver(p.next || '?')}, latest ${ver(p.latest)}` : `Releases with its ${ver('release.yml')} workflow${p.latest ? `, latest ${ver(p.latest)}` : ''}`,
-    p.unreleased ? `<span class="pending">${plural(p.unreleased, 'commit')} on ${esc(p.branch)} not released yet</span>` : p.unreleased === 0 ? `${esc(p.branch)} is fully released` : '',
-  ].filter(Boolean)
-  const out = releasable(repo) ? leftOut(repo) : []
-  const left = out.length ? `<div class="repo-release">Not in the next release: ${esc(leftOutText(out))}</div>` : ''
-  return `<div class="repo-release">${icon('tag', 14)}${parts.map(part => `<span>${part}</span>`).join('<span aria-hidden="true">·</span>')}</div>${left}`
+  if (!p) return [S.planErrors[repo] ? `<span title="${esc(S.planErrors[repo])}">could not check how it releases</span>` : 'checking how it releases…']
+  if (p.method === 'none') return ['no releases yet, so it only merges']
+  const out = p.method === 'tag' ? [p.next ? `next ${ver(p.next)}` : '', `latest ${ver(p.latest)}`] : [`releases with ${ver('release.yml')}`, p.latest ? `latest ${ver(p.latest)}` : '']
+  const commits = `${plural(p.unreleased || 0, 'commit')} unreleased`
+  if (p.unreleased && p.latest) out.push(`<a href="https://github.com/${esc(repo)}/compare/${esc(encodeURIComponent(p.latest))}...${esc(encodeURIComponent(p.branch))}" target="_blank" rel="noreferrer">${commits}</a>`)
+  else if (p.unreleased) out.push(commits)
+  else if (p.unreleased === 0) out.push(`${esc(p.branch)} fully released`)
+  return out.filter(Boolean)
 }
 
-// ---------- Claude panel ----------
+// ---------- run cards ----------
 
+// Under a PR the card names the run's kind; the triage card names the run.
 function runCard(r) {
   const id = esc(r.id)
+  drawn[r.id] = cardSig(r)
   const open = S.openRun === r.id
   // Claude Code reports an API-price estimate on every run; it is only money spent when the run used an API key.
   const billed = r.costUsd && r.apiKeySource && r.apiKeySource !== 'none' ? `$${r.costUsd.toFixed(2)} API` : ''
@@ -747,25 +837,24 @@ function runCard(r) {
       </div>` : ''
     const reply = S.replyOpen[r.id] && !active(r) ? `<div class="reply">
         <textarea class="input" id="reply-${id}" data-act="reply-draft" data-run="${id}" placeholder="Reply to Claude in this run">${esc(S.replyDrafts[r.id] || '')}</textarea>
-        <div class="run-acts"><button class="btn btn-primary" data-act="reply-send" data-run="${id}">Send</button><button class="btn btn-ghost" data-act="reply-cancel" data-run="${id}">Cancel</button></div>
+        <div class="run-acts"><button class="btn btn-sm btn-primary" data-act="reply-send" data-run="${id}">Send</button><button class="btn btn-sm btn-ghost" data-act="reply-cancel" data-run="${id}">Cancel</button></div>
       </div>` : ''
     const acts = active(r)
-      ? `<button class="btn btn-secondary" data-act="run-stop" data-run="${id}" ${r.stopRequested ? 'disabled' : ''}>${r.stopRequested ? 'Stopping…' : 'Stop'}</button>`
-      : `<button class="btn btn-secondary" data-act="reply-open" data-run="${id}">Reply</button>
-         ${r.status !== 'done' ? `<button class="btn btn-secondary" data-act="run-retry" data-run="${id}">${r.status === 'failed' ? 'Retry' : 'Resume'}</button>` : ''}
-         ${r.sessionStarted ? `<button class="btn btn-secondary" data-act="run-terminal" data-run="${id}">Open in Terminal</button>` : ''}
-         <button class="btn btn-ghost" data-act="run-dismiss" data-run="${id}">Dismiss</button>`
+      ? `<button class="btn btn-sm" data-act="run-stop" data-run="${id}" ${r.stopRequested ? 'disabled' : ''}>${r.stopRequested ? 'Stopping…' : 'Stop'}</button>`
+      : `<button class="btn btn-sm" data-act="reply-open" data-run="${id}">Reply</button>
+         ${r.status !== 'done' ? `<button class="btn btn-sm" data-act="run-retry" data-run="${id}">${r.status === 'failed' ? 'Retry' : 'Resume'}</button>` : ''}
+         ${r.sessionStarted ? `<button class="btn btn-sm" data-act="run-terminal" data-run="${id}">Open in Terminal</button>` : ''}
+         <button class="btn btn-sm btn-ghost" data-act="run-dismiss" data-run="${id}">Dismiss</button>`
     body = `<div class="run-body">
       <div class="run-output">${output}</div>
-      ${r.prUrl ? `<a class="run-cwd" href="${esc(r.prUrl)}" target="_blank" rel="noreferrer">${esc(r.prUrl.replace('https://github.com/', ''))}</a>` : ''}
-      <div class="run-cwd">${esc((r.sessionCwd || r.cwd).replace(/^\/Users\/[^/]+/, '~'))}</div>
-      <div class="run-acts">${acts}<button class="btn btn-ghost" data-act="run-log" data-run="${id}">${S.logOpen[r.id] ? 'Hide log' : 'Full log'}</button></div>
+      <div class="run-cwd">${esc(tilde(r.sessionCwd || r.cwd))}</div>
+      <div class="run-acts">${acts}<button class="btn btn-sm btn-ghost" data-act="run-log" data-run="${id}">${S.logOpen[r.id] ? 'Hide log' : 'Full log'}</button></div>
       ${reply}${log}
     </div>`
   }
-  return `<div class="run${open ? ' open' : ''}${active(r) ? ' working' : ''}${S.flash === r.id ? ' flash' : ''}" id="run-${id}" data-enter="run:${id}" style="--dot:${RUN_DOT[r.status] || 'var(--color-neutral-500)'}">
+  return `<div class="run${open ? ' open' : ''}${active(r) ? ' working' : ''}${S.flash === r.id ? ' flash' : ''}" id="run-${id}" data-enter="run:${id}" style="--dot:${RUN_DOT[r.status] || 'var(--mute)'}">
     <button class="run-toggle" data-act="run-toggle" data-run="${id}" aria-expanded="${open}">
-      <div class="run-top"><span class="run-dot"></span><span class="run-title">${esc(r.title)}</span>${icon('chevron', 14, 'chev')}</div>
+      <div class="run-top"><span class="dot"></span><span class="run-title">${esc(r.prUrl ? runName(r) : r.title)}</span>${icon('chevron', 14, 'chev')}</div>
       <div class="run-meta">${esc(meta)}</div>${preview}
     </button>${body}
   </div>`
@@ -776,28 +865,13 @@ const cardSig = r => JSON.stringify([r.status, r.updatedAt, r.stopRequested, S.o
   !!S.replyOpen[r.id], S.flash === r.id, active(r) ? Math.floor(Date.now() / 5000) : 0])
 const drawn = {}
 
-// Redraws only the cards that changed, keeping the scroll of their output and log, so reading or
+// Redraws only the cards on screen that changed, keeping the scroll of their output and log, so reading or
 // selecting text in one run is not reset while another run streams.
 function renderRuns() {
-  $('#runs-meta').textContent = `${S.runs.filter(active).length} working · ${S.runs.length} total`
-  const ids = S.runs.map(r => r.id).join(',')
-  const box = $('#runs')
   keepFocus(() => {
-    if (box.dataset.ids !== ids) {
-      box.dataset.ids = ids
-      for (const r of S.runs) drawn[r.id] = cardSig(r)
-      const scroll = saveScroll(box)
-      box.innerHTML = S.runs.length ? S.runs.map(runCard).join('') : '<div class="no-runs">No runs. Ask Claude from any PR.</div>'
-      animateNew(box)
-      restoreScroll(box, scroll)
-      return
-    }
     for (const r of S.runs) {
-      const sig = cardSig(r)
-      if (drawn[r.id] === sig) continue
-      drawn[r.id] = sig
       const el = document.getElementById(`run-${r.id}`)
-      if (!el) continue
+      if (!el || drawn[r.id] === cardSig(r)) continue
       const scroll = saveScroll(el)
       el.outerHTML = runCard(r)
       const card = document.getElementById(`run-${r.id}`)
@@ -834,11 +908,11 @@ function drawDialog() {
   if (!d) { $('#dialog').innerHTML = ''; return }
   const frame = (title, body, actions) => `<div class="dialog-backdrop" data-act="dialog-backdrop"><div class="dialog" role="dialog" aria-modal="true" aria-label="${esc(title)}">
       <div class="dialog-title">${esc(title)}</div><div class="dialog-body" style="display:flex;flex-direction:column;gap:12px">${body}</div><div class="dialog-actions">${actions}</div></div></div>`
-  const cancel = '<button class="btn btn-secondary" data-act="dialog-close">Cancel</button>'
+  const cancel = '<button class="btn" data-act="dialog-close">Cancel</button>'
   const pr = d.k ? findPr(d.k) : null
   if (d.k && !pr) { S.dialog = null; $('#dialog').innerHTML = ''; return }
   if (d.type === 'ask') {
-    const quick = (LANE[pr.lane].quick || QUICK).map(([t, w]) => `<button class="btn btn-secondary" data-act="quick" data-text="${esc(t)}" data-writes="${w}">${esc(t)}</button>`).join('')
+    const quick = (LANE[pr.lane].quick || QUICK).map(([t, w]) => `<button class="btn btn-sm" data-act="quick" data-text="${esc(t)}" data-writes="${w}">${esc(t)}</button>`).join('')
     // PRs a run may not write to (forks, unsafe branch names) only get a read-only Ask.
     const write = !pr.writable ? '' : `<label class="check"><input type="checkbox" id="ask-write" data-act="ask-write"${d.write ? ' checked' : ''}> Let Claude change code and push</label>`
     $('#dialog').innerHTML = frame(`Ask Claude about ${short(pr)}`,
@@ -989,7 +1063,6 @@ async function loadRuns() {
       if (!r || !S.logOpen[id]) delete S.fullLog[id]
       else if (active(r) || before.get(id) !== r.status) loadFullLog(id)
     }
-    if (S.openRun === undefined) S.openRun = (S.runs.find(active) || S.runs[0])?.id ?? null
     renderRuns()
     if (S.runs.some(r => before.get(r.id) !== r.status) || before.size !== S.runs.length) {
       renderBoard()
@@ -1016,10 +1089,13 @@ async function loadHealth() {
 
 // ---------- actions ----------
 
+// Opens a run's card where it lives: under its PR, unfolding the PR's runs, or inside the triage card.
 function showRun(id) {
+  const pr = allPrs().find(p => p.url === S.runs.find(r => r.id === id)?.prUrl)
+  if (pr) S.runsOpen[keyOf(pr)] = true
   S.openRun = id
   S.flash = id
-  renderRuns()
+  renderBoard()
   document.getElementById(`run-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   setTimeout(() => { S.flash = null; renderRuns() }, 1500)
 }
@@ -1088,6 +1164,16 @@ async function ghEach(verb, prs) {
 
 // A verb with a gh action runs it; any other starts its Claude run.
 const perform = (v, pr) => VERBS[v].gh ? ghEach(v, [pr]) : startRun(VERBS[v].run, pr, VERBS[v].note)
+
+// Starts again each kind whose last run on the PR failed, one after another: writing runs on one PR queue.
+async function retryAll(pr) {
+  let n = 0
+  for (const r of retryable(pr)) {
+    if (FRESH.includes(r.kind)) n += (await startEach(r.kind, [pr])).length
+    else { await runVerb(r.id, 'retry'); n++ }
+  }
+  if (n) toast(`Started ${plural(n, 'Claude run')} on ${short(pr)}`)
+}
 
 async function runBulk() {
   const d = S.dialog
@@ -1182,9 +1268,11 @@ const ACTIONS = {
     if (S.summaryOpen) $('.hero-detail')?.classList.add('anim-fade')
   },
   'show-run': ({ run }) => showRun(run),
+  'runs-toggle': ({ k }) => { S.runsOpen[k] = !S.runsOpen[k]; renderBoard() },
+  'retry-all': ({ pr }) => retryAll(pr),
   'run-toggle': ({ run }) => {
     S.openRun = S.openRun === run ? null : run
-    renderRuns()
+    renderBoard()
     if (S.openRun) document.getElementById(`run-${S.openRun}`)?.querySelector('.run-body')?.classList.add('anim-fade')
   },
   'run-log': ({ run }) => {

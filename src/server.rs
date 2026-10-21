@@ -24,8 +24,6 @@ use crate::util::{first_line, open_terminal, sh, shq, Output};
 use crate::workspace;
 
 const INDEX: &str = include_str!("../public/index.html");
-// The Organic design system stylesheet, kept byte-for-byte as the design handed it over.
-const ORGANIC_CSS: &str = include_str!("../public/organic.css");
 
 struct App {
     store: Arc<Store>,
@@ -89,10 +87,6 @@ async fn guard(State(app): State<Shared>, req: Request, next: Next) -> Response 
 
 async fn index() -> Html<&'static str> {
     Html(INDEX)
-}
-
-async fn organic_css() -> impl IntoResponse {
-    ([(header::CONTENT_TYPE, "text/css; charset=utf-8")], ORGANIC_CSS)
 }
 
 async fn health() -> Json<Value> {
@@ -283,7 +277,6 @@ pub fn router(store: Arc<Store>, prs: Arc<Cache>, port: u16) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
-        .route("/organic.css", get(organic_css))
         .route("/api/health", get(health))
         .route("/api/prs", get(list_prs))
         .route("/api/runs", get(list_runs).post(create_run))

@@ -46,6 +46,8 @@ pub enum Kind {
     Digest,
     Thermo,
     Relevance,
+    /// Resolves the PR's conflicts with its base, then runs the thermo-nuclear review on the result.
+    Resolve,
     /// A request in your own words that may change code and push; a plain Ask only reads.
     Task,
 }
@@ -70,6 +72,7 @@ impl Kind {
             Kind::Digest => "Morning summary",
             Kind::Thermo => "Thermo-nuclear review",
             Kind::Relevance => "Still relevant?",
+            Kind::Resolve => "Resolve & review",
         }
     }
 
@@ -83,7 +86,7 @@ impl Kind {
     pub fn mode(self) -> Mode {
         match self {
             Kind::Review | Kind::Triage | Kind::Digest | Kind::Ask => Mode::Plan,
-            Kind::Fix | Kind::Rebase | Kind::Thermo | Kind::Relevance | Kind::Task => Mode::Auto,
+            Kind::Fix | Kind::Rebase | Kind::Thermo | Kind::Relevance | Kind::Resolve | Kind::Task => Mode::Auto,
         }
     }
 
@@ -312,6 +315,7 @@ Start your final report with one line: the verdict and what you did (closed it, 
 
 {rules}", url = pr.url),
         Kind::Thermo => format!("Run /thermo-nuclear-code-quality-review on this pull request's branch.\n\n{facts}\n\nThis PR targets '{base}', so review its changes against origin/'{base}', not the repo's default branch. Apply the fixes it calls for, commit and push them. {record}\n\nMake the breakdown your last message: leave no background task running.\n\n{rules}", record = record_review_step(pr)),
+        Kind::Resolve => format!("Resolve this pull request's conflicts with '{base}', then run /thermo-nuclear-code-quality-review on the result.\n\n{facts}\n\n1. Merge origin/'{base}' into the branch and resolve the conflicts so the PR keeps its intent. Run the repo's checks and push. If you cannot resolve them with confidence, stop here and say why: do not start the review.\n2. Run /thermo-nuclear-code-quality-review on the pushed branch, reviewing its changes against origin/'{base}'. Apply the fixes it calls for, commit and push them. {record}\n\nMake the breakdown your last message: leave no background task running.\n\n{rules}", record = record_review_step(pr)),
         Kind::Ask | Kind::Task | Kind::Triage | Kind::Digest => format!("{note}\n\nThis is about my pull request:\n{facts}\n\n{rules}"),
     }
 }
@@ -1049,6 +1053,7 @@ mod tests {
             (Kind::Rebase, Mode::Auto),
             (Kind::Thermo, Mode::Auto),
             (Kind::Relevance, Mode::Auto),
+            (Kind::Resolve, Mode::Auto),
             (Kind::Task, Mode::Auto),
         ];
         for (kind, mode) in kinds {
@@ -1061,7 +1066,7 @@ mod tests {
     #[test]
     fn a_question_only_reads_and_a_task_keeps_the_write_rules() {
         let pr = Pr { repo: "o/r".into(), name: "r".into(), head: "feat".into(), base: "main".into(), ..Default::default() };
-        for kind in [Kind::Fix, Kind::Rebase, Kind::Thermo, Kind::Relevance, Kind::Task] {
+        for kind in [Kind::Fix, Kind::Rebase, Kind::Thermo, Kind::Relevance, Kind::Resolve, Kind::Task] {
             let text = rules(&pr, kind, None, None);
             assert!(text.contains("Never force-push"), "{kind:?}");
             assert_eq!(text.contains("Do not merge, close"), kind != Kind::Relevance, "{kind:?}");
@@ -1084,6 +1089,17 @@ mod tests {
         let prompt = build_prompt(Kind::Thermo, &pr, "", "");
         assert!(prompt.contains("record-review --repo 'o/r' --branch 'feat' --sha \"$(git rev-parse HEAD)\" --verdict pass"));
         assert!(!prompt.contains("the skill's final step"));
+    }
+
+    #[test]
+    fn resolve_and_review_merges_before_it_reviews_and_records_the_verdict() {
+        let pr = Pr { repo: "o/r".into(), head: "feat".into(), base: "main".into(), ..Default::default() };
+        let prompt = build_prompt(Kind::Resolve, &pr, "", "");
+        let merge = prompt.find("Merge origin/'main'").unwrap();
+        assert!(merge < prompt.find("2. Run /thermo-nuclear-code-quality-review").unwrap());
+        assert!(prompt.contains("do not start the review"));
+        assert!(prompt.contains("record-review --repo 'o/r' --branch 'feat'"));
+        assert_eq!(serde_name(&Kind::Resolve), "resolve");
     }
 
     #[test]
