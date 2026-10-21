@@ -35,6 +35,7 @@
   --info: oklch(0.75 0.11 260);
   --info-ink: oklch(0.84 0.09 260);
   --approval: oklch(0.74 0.08 200);
+  --reviewed: oklch(0.62 0.06 260);
   --mute: oklch(0.55 0.02 155);
   --stale: oklch(0.45 0.02 155);
   --font: 'Figtree', system-ui, sans-serif;
@@ -217,8 +218,6 @@ button.state:hover { color: #fff; }
 /* run cards: a PR's own runs unfolded under its row, and the triage run inside its card */
 .strip-runs { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px 40px; }
 .hero-run { margin-top: 4px; }
-.left-runs { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; }
-a.run-cwd { color: var(--link); }
 .run { background: var(--raise); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; transition: box-shadow .3s; }
 .run.flash { box-shadow: 0 0 0 2px var(--primary); }
 .run-toggle { all: unset; cursor: pointer; padding: 12px 14px; display: flex; flex-direction: column; gap: 4px; border-radius: 10px; }
@@ -342,7 +341,7 @@ const VERBS = {
     go: 'Check it' } },
   address: { run: 'task', note: ADDRESS, writes: true },
   // Someone else's PR: Claude reviews it without changing it, then approves or requests changes from your account.
-  approve: { menu: 'Thermo review, then approve…', run: 'approve', writes: true, when: pr => pr.lane === 'waiting', confirm: {
+  approve: { menu: 'Thermo review, then approve…', run: 'approve', writes: true, when: pr => LANE[pr.lane].theirs, confirm: {
     title: pr => `Thermo review ${short(pr)}, then approve?`,
     body: pr => `<p style="margin:0">Claude runs the thermo-nuclear review on <b>${esc(pr.title)}</b> by @${esc(pr.author)} without changing the PR.</p>
        <p style="margin:0">If nothing critical turns up, <b>Claude approves it from your account</b> with a short, funny comment. If something critical does, it <b>requests changes</b> and lists what to fix.</p>`,
@@ -366,12 +365,14 @@ const VERBS = {
 const can = (v, pr, mine) => { const V = VERBS[v]; return (!V.writes || pr.writable) && (!V.mine || mine) && (!V.when || V.when(pr)) }
 
 // One model per bucket: the server decides each PR's lane; the bucket says what you can do with it.
-// `action` is [label, verb] for the row's primary button; `bulk` runs its verb on the whole bucket.
+// `action` is [label, verb] for the row's primary button; `bulk` runs its verb on the whole bucket; `theirs`
+// marks the lanes that hold other people's PRs.
 const LANES = [
   { id: 'ready', label: 'Ready to merge', hint: 'Mergeable, nothing GitHub requires is missing.', dot: 'var(--ok)',
     action: ['Merge', 'merge'], bulk: { label: 'Merge all', verb: 'merge' } },
-  { id: 'waiting', label: 'Waiting on you', hint: 'Someone asked for your review.', dot: 'var(--info)',
+  { id: 'waiting', label: 'Waiting on you', hint: 'Someone asked for your review.', dot: 'var(--info)', theirs: true,
     action: ['Review with Claude', 'review'], bulk: { label: 'Review all with Claude', verb: 'review' } },
+  { id: 'reviewed', label: 'Reviewed by you', hint: 'You reviewed it; it stays here until it is merged or closed.', dot: 'var(--reviewed)', theirs: true },
   { id: 'fix', label: 'Fix CI', hint: 'A required check failed. Claude reads the log and fixes it.', dot: 'var(--bad)',
     action: ['Fix CI with Claude', 'fix'], bulk: { label: 'Fix all with Claude', verb: 'fix' },
     quick: [['CI is failing here, fix it', true], ['Is this failure caused by my PR or by main?', false]] },
@@ -495,7 +496,7 @@ function focusEnd(id) {
 // ---------- model ----------
 
 function allPrs() {
-  return S.data ? [...S.data.mine, ...S.data.waiting] : []
+  return S.data ? [...S.data.mine, ...S.data.others] : []
 }
 
 const findPr = k => allPrs().find(pr => keyOf(pr) === k)
@@ -509,7 +510,7 @@ const prOf = r => r.prUrl ? allPrs().find(p => p.url === r.prUrl) : null
 function retryable(pr) {
   const latest = new Map()
   for (const r of runsOf(pr)) if (!latest.has(r.kind)) latest.set(r.kind, r)
-  const mine = pr.lane !== 'waiting'
+  const mine = !LANE[pr.lane].theirs
   const offered = r => resumes(r) || Object.entries(VERBS).some(([v, V]) => V.run === r.kind && !V.confirm && can(v, pr, mine))
   return [...latest.values()].filter(r => (r.status === 'failed' || r.status === 'interrupted') && offered(r))
 }
@@ -518,7 +519,7 @@ const lanePrs = id => allPrs().filter(pr => pr.lane === id).sort((a, b) => Date.
 const doneFor = k => S.done[k] && Date.now() - S.done[k].at < 120000 ? S.done[k].label : null
 const idle = pr => !doneFor(keyOf(pr)) && !runFor(pr) && !S.busy[keyOf(pr)]
 // The PRs a bucket's bulk action would take: idle, and offered that action on their own row.
-const actionable = id => lanePrs(id).filter(pr => idle(pr) && (!LANE[id].bulk || can(LANE[id].bulk.verb, pr, id !== 'waiting')))
+const actionable = id => lanePrs(id).filter(pr => idle(pr) && (!LANE[id].bulk || can(LANE[id].bulk.verb, pr, !LANE[id].theirs)))
 const repoName = repo => repo.split('/').pop()
 const releasable = repo => ['tag', 'workflow'].includes(S.plans[repo]?.method)
 // Your idle Ready PRs that Merge & release can take: in `repo`, or in every repo that releases.
@@ -621,12 +622,12 @@ function heroBody(o) {
 
 // ---------- buckets ----------
 
-// `byRepo`: no lane heading above the row says it is ready or waiting on you, so a tag does.
+// `byRepo`: no lane heading above the row says it is ready, waiting on you or reviewed by you, so a tag does.
 function tags(pr, lane, byRepo) {
   const out = []
   const tag = (label, cls, title = '') => out.push(`<span class="tag ${cls}"${title ? ` title="${esc(title)}"` : ''}>${label}</span>`)
-  if (byRepo && lane === 'ready') tag('Ready to merge', 'tag-ok')
-  if (byRepo && lane === 'waiting') tag('Waiting on you', 'tag-info')
+  if (byRepo && lane.id === 'ready') tag('Ready to merge', 'tag-ok')
+  if (byRepo && lane.theirs) tag(lane.label, 'tag-info')
   if (pr.ci === 'fail' && pr.mergeState === 'UNSTABLE') tag('Optional check failing', 'tag-warn', 'GitHub does not require this check; the PR can still merge')
   else ({ pass: () => tag('CI passing', 'tag-ok'), fail: () => tag('CI failing', 'tag-bad'), running: () => tag('CI running', 'tag-mute'), none: () => tag('No checks', 'tag-mute') })[pr.ci]()
   if (pr.mergeable === 'CONFLICTING') tag('Conflicts', 'tag-bad')
@@ -637,7 +638,7 @@ function tags(pr, lane, byRepo) {
   if (pr.isDraft) tag('Draft', 'tag-mute')
   if (pr.isCrossRepo) tag('From a fork', 'tag-mute', 'Claude runs that change code are off for fork PRs')
   // A thermo-nuclear review shows once one is recorded; the runs strip says when one failed to run.
-  if (lane !== 'waiting') {
+  if (!lane.theirs) {
     const { state, tip } = review(pr)
     if (state !== 'none') tag(...{ outdated: ['Review outdated', 'tag-mute'], pass: ['✓ Review passed', 'tag-ok'], fail: ['✕ Review failed', 'tag-bad'] }[state], tip)
   }
@@ -667,7 +668,7 @@ function row(pr, lane, byRepo = false) {
   const done = doneFor(k)
   const link = (href, body, cls = '') => href ? `<a class="${cls}" href="${esc(href)}" target="_blank" rel="noreferrer">${body}</a>` : `<span class="${cls}">${body}</span>`
   const fails = pr.failing.slice(0, 4).map(c => link(httpsOnly(c.url), `✕ ${esc(c.name)}${c.cancelled ? ' (cancelled)' : ''}`)).join('')
-  const mine = lane.id !== 'waiting'
+  const mine = !lane.theirs
   const verbs = vs => vs.filter(v => can(v, pr, mine)).map(v => `<button data-act="verb" data-verb="${v}"${VERBS[v].danger ? ' class="danger"' : ''}>${VERBS[v].menu}</button>`).join('')
   const menu = S.menu !== k ? '' : `<div class="menu" role="menu">
       ${link(pr.url, 'Open on GitHub')}${link(pr.url + '/files', 'View changes')}<div class="sep"></div>
@@ -699,7 +700,7 @@ function row(pr, lane, byRepo = false) {
       <span class="dot" style="--dot:${lane.dot}" title="${esc(`${lane.label}. ${lane.hint}`)}"></span>
       <div class="pr-main">
         <div class="pr-head">${link(pr.url, esc(pr.title), 'pr-title')}<span class="pr-num">${byRepo ? '' : link(`https://github.com/${pr.repo}`, esc(pr.name))}#${pr.number}</span>${author}</div>
-        <div class="pr-meta">${tags(pr, lane.id, byRepo)}<span class="dim">${info}</span></div>
+        <div class="pr-meta">${tags(pr, lane, byRepo)}<span class="dim">${info}</span></div>
         ${fails ? `<div class="fails">${fails}</div>` : ''}
       </div>
       <div class="pr-acts">${acts}</div>
@@ -754,19 +755,7 @@ function renderBoard() {
 function boardBody() {
   if (!S.data) return S.error ? '' : '<div class="panel"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>'
   const buckets = S.group === 'repo' ? repoBuckets() : laneBuckets()
-  return leftRuns() + (buckets || `<div class="panel empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`)
-}
-
-// Runs from the past day on PRs that have left your inbox (merged, closed, or reviewed so they no longer wait on
-// you), so a verdict or report stays readable after its row is gone. Dismiss clears one.
-function leftRuns() {
-  if (S.lane !== 'all') return ''
-  const runs = S.runs.filter(r => r.prUrl && !prOf(r) && (active(r) || Date.now() - (r.endedAt || r.startedAt) < DAY))
-  if (!runs.length) return ''
-  return `<section class="group" data-enter="left">
-    <div class="group-head"><h2>Left your inbox</h2><span class="sub">${plural(runs.length, 'run')} on PRs that were merged, closed or reviewed · Dismiss to clear</span></div>
-    <div class="panel left-runs">${runs.map(runCard).join('')}</div>
-  </section>`
+  return buckets || `<div class="panel empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
 }
 
 function laneBuckets() {
@@ -833,7 +822,7 @@ function releaseInfo(repo) {
 
 // ---------- run cards ----------
 
-// Under its PR the card names the run's kind; anywhere else it names the run, and links a PR that has left.
+// Under its PR the card names the run's kind; the triage card names the run.
 function runCard(r) {
   const id = esc(r.id)
   const under = prOf(r)
@@ -870,7 +859,6 @@ function runCard(r) {
          <button class="btn btn-sm btn-ghost" data-act="run-dismiss" data-run="${id}">Dismiss</button>`
     body = `<div class="run-body">
       <div class="run-output">${output}</div>
-      ${r.prUrl && !under ? `<a class="run-cwd" href="${esc(r.prUrl)}" target="_blank" rel="noreferrer">${esc(r.prUrl.replace('https://github.com/', ''))}</a>` : ''}
       <div class="run-cwd">${esc(tilde(r.sessionCwd || r.cwd))}</div>
       <div class="run-acts">${acts}<button class="btn btn-sm btn-ghost" data-act="run-log" data-run="${id}">${S.logOpen[r.id] ? 'Hide log' : 'Full log'}</button></div>
       ${reply}${log}
@@ -1113,8 +1101,7 @@ async function loadHealth() {
 
 // ---------- actions ----------
 
-// Opens a run's card where it lives: under its PR, unfolding the PR's runs, in Left your inbox, or inside the
-// triage card.
+// Opens a run's card where it lives: under its PR, unfolding the PR's runs, or inside the triage card.
 function showRun(id) {
   const pr = prOf(S.runs.find(r => r.id === id) || {})
   if (pr) S.runsOpen[keyOf(pr)] = true

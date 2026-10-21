@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crate::github::{Cache, Pr, Snapshot};
+use crate::github::{Cache, Lane, Pr, Snapshot};
 use crate::runs::{Kind, Store};
 use crate::util::{data_dir, local_date, local_hour, now_ms, read_json, serde_name, write_atomic};
 
@@ -56,9 +56,12 @@ fn line(pr: &Pr) -> String {
 fn context(snap: &Snapshot, store: &Store, kind: Kind) -> String {
     let mut lines = vec!["My open pull requests:".to_string()];
     lines.extend(snap.mine.iter().map(line));
-    if !snap.waiting.is_empty() {
-        lines.push("\nWaiting on me (review requests and assignments):".into());
-        lines.extend(snap.waiting.iter().map(line));
+    for (lane, heading) in [(Lane::Waiting, "Waiting on me (review requests and assignments)"), (Lane::Reviewed, "Reviewed by me, waiting on the author")] {
+        let prs: Vec<String> = snap.others.iter().filter(|p| p.lane == lane).map(line).collect();
+        if !prs.is_empty() {
+            lines.push(format!("\n{heading}:"));
+            lines.extend(prs);
+        }
     }
     if kind == Kind::Digest {
         let activity = store.activity_since(now_ms().saturating_sub(DAY_MS));

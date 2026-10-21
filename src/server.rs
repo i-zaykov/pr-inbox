@@ -122,7 +122,7 @@ async fn list_prs(State(app): State<Shared>) -> Response {
         Err(e) => return err(StatusCode::BAD_GATEWAY, e),
     };
     if snap.warning.is_none() {
-        let open: HashSet<(String, u64)> = snap.mine.iter().chain(&snap.waiting).map(|p| (p.name.clone(), p.number)).collect();
+        let open: HashSet<(String, u64)> = snap.mine.iter().chain(&snap.others).map(|p| (p.name.clone(), p.number)).collect();
         let store = app.store.clone();
         tokio::spawn(async move { workspace::sweep(open, store.active_dirs()).await });
     }
