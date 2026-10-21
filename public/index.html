@@ -339,6 +339,12 @@ const VERBS = {
        <p style="margin:0">If it was replaced or no longer matters, <b>Claude closes the PR</b> (no comment, branch kept; you can reopen it). If it is still needed, Claude rescues it: merges <code>${esc(pr.base)}</code>, resolves conflicts, fixes CI and pushes.</p>`,
     go: 'Check it' } },
   address: { run: 'task', note: ADDRESS, writes: true },
+  // Someone else's PR: Claude reviews it without changing it, then approves or requests changes from your account.
+  approve: { menu: 'Thermo review, then approve…', run: 'approve', writes: true, when: pr => pr.lane === 'waiting', confirm: {
+    title: pr => `Thermo review ${short(pr)}, then approve?`,
+    body: pr => `<p style="margin:0">Claude runs the thermo-nuclear review on <b>${esc(pr.title)}</b> by @${esc(pr.author)} without changing the PR.</p>
+       <p style="margin:0">If nothing critical turns up, <b>Claude approves it from your account</b> with a short, funny comment. If something critical does, it <b>requests changes</b> and lists what to fix.</p>`,
+    go: 'Review it' } },
   update: { menu: 'Update branch', gh: 'update', doing: 'Updating', did: 'Updated' },
   ready: { menu: 'Mark ready for review', gh: 'ready', when: pr => pr.isDraft, doing: 'Marking ready', did: 'Marked ready' },
   merge: { menu: 'Merge…', gh: 'merge', mine: true, doing: 'Merging', did: 'Merged', confirm: {
@@ -384,7 +390,7 @@ const LANES = [
 ]
 const LANE = Object.fromEntries(LANES.map(l => [l.id, l]))
 // Per run kind: what a PR's row says while the run works on it, and what it calls a finished one.
-const KIND = { fix: ['Fixing CI', 'Fix CI'], rebase: ['Rebasing', 'Rebase'], review: ['Review started', 'Review'], thermo: ['Reviewing code', 'Thermo review'], resolve: ['Resolving, then reviewing', 'Resolve & review'],
+const KIND = { fix: ['Fixing CI', 'Fix CI'], rebase: ['Rebasing', 'Rebase'], review: ['Review started', 'Review'], thermo: ['Reviewing code', 'Thermo review'], resolve: ['Resolving, then reviewing', 'Resolve & review'], approve: ['Reviewing, then approving', 'Thermo & approve'],
   relevance: ['Checking relevance', 'Relevance check'], ask: ['Claude working', 'Claude request'], task: ['Claude working', 'Claude request'] }
 const RUN_DOT = { done: 'var(--ok)', running: 'var(--info)', queued: 'var(--info)', failed: 'var(--bad)', stopped: 'var(--mute)', interrupted: 'var(--mute)' }
 // Retry starts a run of the same kind fresh from the PR, so a run whose directory is gone gets today's worktree.
@@ -661,7 +667,7 @@ function row(pr, lane, byRepo = false) {
   const verbs = vs => vs.filter(v => can(v, pr, mine)).map(v => `<button data-act="verb" data-verb="${v}"${VERBS[v].danger ? ' class="danger"' : ''}>${VERBS[v].menu}</button>`).join('')
   const menu = S.menu !== k ? '' : `<div class="menu" role="menu">
       ${link(pr.url, 'Open on GitHub')}${link(pr.url + '/files', 'View changes')}<div class="sep"></div>
-      <button data-act="ask">Ask Claude…</button>${verbs(['fix', 'rebase', 'resolve', 'review', 'thermo', 'relevance'])}<div class="sep"></div>
+      <button data-act="ask">Ask Claude…</button>${verbs(['fix', 'rebase', 'resolve', 'review', 'approve', 'thermo', 'relevance'])}<div class="sep"></div>
       ${verbs(['update', 'ready', 'merge', 'ship', 'admin', 'close'])}
     </div>`
   let acts
@@ -698,14 +704,15 @@ function row(pr, lane, byRepo = false) {
   </article>`
 }
 
-// The buttons beside the lane's own action: one of merge and release, resolve and review, an admin merge or the
-// relevance check, whichever this PR can take (else its GitHub page), then the thermo-nuclear review until the
-// current commit has passed it. Every other action is in the row's menu.
+// The buttons beside the lane's own action: one of merge and release, resolve and review, an admin merge, the
+// review-then-approve of someone else's PR or the relevance check, whichever this PR can take (else its GitHub
+// page), then the thermo-nuclear review until the current commit has passed it. Every other action is in the menu.
 function extras(pr, verb, mine) {
   const button = (v, body, tip) => `<button class="btn" data-act="verb" data-verb="${v}" title="${esc(tip)}">${body}</button>`
   const one = verb === 'merge' && can('ship', pr, mine) ? button('ship', `${icon('rocket', 14)}Merge &amp; release`, shipTip(pr.repo))
     : can('resolve', pr, mine) ? button('resolve', `${icon('sparkle', 14)}Resolve &amp; review`, `One Claude run: merge ${pr.base} and resolve the conflicts, push, then run the thermo-nuclear review on the result. It stops before the review if the conflicts need you.`)
     : can('admin', pr, mine) ? button('admin', `${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}`, 'Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.')
+    : can('approve', pr, mine) ? button('approve', `${icon('sparkle', 14)}Thermo &amp; approve`, `Thermo-nuclear review without changing the PR, then approve with a funny comment, or request changes if something is critical. You confirm first.`)
     : verb !== 'relevance' && can('relevance', pr, mine) ? button('relevance', 'Still relevant?', `Claude checks it against today's ${pr.base}: closes it if it no longer matters, rescues it if it does`)
     : `<a class="btn" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open on GitHub</a>`
   const thermo = can('thermo', pr, mine) ? button('thermo', `${icon('sparkle', 14)}Thermo review`, "Run the thermo-nuclear review on this PR's branch") : ''

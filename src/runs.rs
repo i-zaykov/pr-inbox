@@ -48,6 +48,9 @@ pub enum Kind {
     Relevance,
     /// Resolves the PR's conflicts with its base, then runs the thermo-nuclear review on the result.
     Resolve,
+    /// Runs the thermo-nuclear review on someone else's PR without changing it, then approves it with a light
+    /// comment, or requests changes listing what is critical.
+    Approve,
     /// A request in your own words that may change code and push; a plain Ask only reads.
     Task,
 }
@@ -73,6 +76,7 @@ impl Kind {
             Kind::Thermo => "Thermo-nuclear review",
             Kind::Relevance => "Still relevant?",
             Kind::Resolve => "Resolve & review",
+            Kind::Approve => "Thermo review & approve",
         }
     }
 
@@ -86,7 +90,7 @@ impl Kind {
     pub fn mode(self) -> Mode {
         match self {
             Kind::Review | Kind::Triage | Kind::Digest | Kind::Ask => Mode::Plan,
-            Kind::Fix | Kind::Rebase | Kind::Thermo | Kind::Relevance | Kind::Resolve | Kind::Task => Mode::Auto,
+            Kind::Fix | Kind::Rebase | Kind::Thermo | Kind::Relevance | Kind::Resolve | Kind::Approve | Kind::Task => Mode::Auto,
         }
     }
 
@@ -290,8 +294,13 @@ fn rules(pr: &Pr, kind: Kind, ws: Option<&Workspace>, checkout: Option<&Path>) -
         }
         None => format!("There is no local checkout of {}. Clone it into {} with gh first.", pr.repo, checkouts_dir().join(&pr.name).display()),
     };
-    // Only the relevance check may close the PR, and only after deciding it is no longer needed.
-    let limits = if kind == Kind::Relevance { "Do not merge, approve or comment on the PR." } else { "Do not merge, close, approve or comment on the PR." };
+    // Only the relevance check may close the PR, after deciding it is no longer needed, and only the review of
+    // someone else's PR posts a review on it.
+    let limits = match kind {
+        Kind::Relevance => "Do not merge, approve or comment on the PR.",
+        Kind::Approve => "Do not push, merge or close the PR, and post nothing on it but that one review.",
+        _ => "Do not merge, close, approve or comment on the PR.",
+    };
     format!(
         "{place} Leave every other checkout alone. {limits} Quote branch names in shell commands. Never force-push and never skip hooks with --no-verify. \
          Wait for CI at most 30 minutes; if no check has started after 10 minutes, say so and stop. \
@@ -321,6 +330,16 @@ Start your final report with one line: the verdict and what you did (closed it, 
 {rules}", url = pr.url),
         Kind::Thermo => format!("Run /thermo-nuclear-code-quality-review on this pull request's branch.\n\n{facts}\n\n{steps}\n\n{rules}", steps = thermo_steps(pr)),
         Kind::Resolve => format!("Resolve this pull request's conflicts with '{base}', then run /thermo-nuclear-code-quality-review on the result.\n\n{facts}\n\n1. Merge origin/'{base}' into the branch and resolve the conflicts so the PR keeps its intent. Run the repo's checks and push. If you cannot resolve them with confidence, stop here and say why: do not start the review.\n2. Run /thermo-nuclear-code-quality-review on the pushed branch. {steps}\n\n{rules}", steps = thermo_steps(pr)),
+        Kind::Approve => format!(
+            "Run /thermo-nuclear-code-quality-review on this pull request as its reviewer, without changing it.\n\n{facts}\nAuthor: {author}\n\n\
+             This is someone else's PR. Review its changes against origin/'{base}', and skip every step of the skill that edits, commits, pushes, records a verdict or runs code-review with --fix. \
+             Then post exactly one review from my account with `gh pr review {url}`:\n\
+             - Nothing critical left (no blocker and no confirmed bug): `--approve` with a one-line comment that is short, kind and funny about what the change does. Keep it work-appropriate.\n\
+             - Something critical: `--request-changes` with each blocker in a sentence or two: the file, what goes wrong, and what to change. No jokes there.\n\n\
+             Start your final report with one line: APPROVED or CHANGES REQUESTED, and why.\n\n{rules}",
+            author = pr.author,
+            url = pr.url,
+        ),
         Kind::Ask | Kind::Task | Kind::Triage | Kind::Digest => format!("{note}\n\nThis is about my pull request:\n{facts}\n\n{rules}"),
     }
 }
@@ -1059,6 +1078,7 @@ mod tests {
             (Kind::Thermo, Mode::Auto),
             (Kind::Relevance, Mode::Auto),
             (Kind::Resolve, Mode::Auto),
+            (Kind::Approve, Mode::Auto),
             (Kind::Task, Mode::Auto),
         ];
         for (kind, mode) in kinds {
@@ -1071,10 +1091,10 @@ mod tests {
     #[test]
     fn a_question_only_reads_and_a_task_keeps_the_write_rules() {
         let pr = Pr { repo: "o/r".into(), name: "r".into(), head: "feat".into(), base: "main".into(), ..Default::default() };
-        for kind in [Kind::Fix, Kind::Rebase, Kind::Thermo, Kind::Relevance, Kind::Resolve, Kind::Task] {
+        for kind in [Kind::Fix, Kind::Rebase, Kind::Thermo, Kind::Relevance, Kind::Resolve, Kind::Approve, Kind::Task] {
             let text = rules(&pr, kind, None, None);
             assert!(text.contains("Never force-push"), "{kind:?}");
-            assert_eq!(text.contains("Do not merge, close"), kind != Kind::Relevance, "{kind:?}");
+            assert_eq!(text.contains("Do not merge, close"), !matches!(kind, Kind::Relevance | Kind::Approve), "{kind:?}");
         }
         let checkout = Path::new("/c/r");
         let ask = rules(&pr, Kind::Ask, None, Some(checkout));
@@ -1094,6 +1114,17 @@ mod tests {
         let prompt = build_prompt(Kind::Thermo, &pr, "", "");
         assert!(prompt.contains("record-review --repo 'o/r' --branch 'feat' --sha \"$(git rev-parse HEAD)\" --verdict pass"));
         assert!(!prompt.contains("the skill's final step"));
+    }
+
+    #[test]
+    fn a_review_of_someone_elses_pr_posts_one_review_and_never_pushes() {
+        let pr = Pr { repo: "o/r".into(), url: "https://github.com/o/r/pull/7".into(), head: "feat".into(), base: "main".into(), author: "ana".into(), ..Default::default() };
+        let prompt = build_prompt(Kind::Approve, &pr, "", &rules(&pr, Kind::Approve, None, None));
+        assert!(prompt.contains("gh pr review https://github.com/o/r/pull/7"));
+        assert!(prompt.contains("`--approve`") && prompt.contains("`--request-changes`"));
+        assert!(prompt.contains("skip every step of the skill that edits, commits, pushes"));
+        assert!(prompt.contains("post nothing on it but that one review") && !prompt.contains("record-review"));
+        assert_eq!(serde_name(&Kind::Approve), "approve");
     }
 
     #[test]
