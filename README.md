@@ -41,6 +41,8 @@ Runs that change code need a local clone of the repo. PR Inbox looks for each re
 PR_INBOX_CHECKOUTS=~/work ./install.sh
 ```
 
+Later reinstalls keep that folder, so a plain `./install.sh` is enough after the first one.
+
 Reviews and questions work without a clone.
 
 ### Use another port

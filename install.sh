@@ -5,15 +5,21 @@ set -euo pipefail
 cd "$(dirname "$0")"
 NAME="PR Inbox"
 LABEL="io.github.i-zaykov.pr-inbox"
+AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
+# A reinstall keeps the installed agent's port and checkouts folder unless you pass new ones, so a plain
+# ./install.sh never sends runs to another folder.
+installed() { /usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:$1" "$AGENT" 2>/dev/null || true }
 # The agent and the window get the same port, so a custom port never splits the app into two servers.
-PORT="${PR_INBOX_PORT:-4477}"
+PORT="${PR_INBOX_PORT:-$(installed PR_INBOX_PORT)}"
+PORT="${PORT:-4477}"
 # Where your clones live, one folder per repo named like it (~/code/my-repo); both processes get it too.
-CHECKOUTS="${PR_INBOX_CHECKOUTS:-$HOME/code}"
+CHECKOUTS="${PR_INBOX_CHECKOUTS:-$(installed PR_INBOX_CHECKOUTS)}"
+CHECKOUTS="${CHECKOUTS:-$HOME/code}"
 VERSION=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
 APP="$HOME/Applications/$NAME.app"
 BIN="$APP/Contents/MacOS/pr-inbox"
-AGENT="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG="$HOME/Library/Logs/$NAME.log"
+echo "Clones in $CHECKOUTS, server on port $PORT"
 echo "1/3 Building (release)"
 cargo build --release
 echo "2/3 Installing into $APP"
