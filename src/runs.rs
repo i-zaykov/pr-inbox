@@ -265,13 +265,15 @@ fn thermo_skill_at(local: &Path) -> String {
 }
 
 /// How every run that does a thermo-nuclear review goes on once the skill is named: compare against the PR's
-/// base, push the fixes, record the verdict, and end on the breakdown. The prompt spells the record command out
-/// because the review skill that loads may be a copy without PR Inbox's record step (the claude.ai synced one
-/// shadows the local one).
+/// base, push the fixes, wait for CI, record the verdict, and end on the breakdown. The prompt spells the record
+/// command out because the review skill that loads may be a copy without PR Inbox's record step (the claude.ai
+/// synced one shadows the local one). It overrides the skill's background CI wait, which a headless run ends
+/// before CI does, so the verdict was never recorded.
 fn thermo_steps(pr: &Pr) -> String {
     let exe = std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|_| "pr-inbox".into());
     format!(
         "This PR targets '{base}', so review its changes against origin/'{base}', not the repo's default branch. Apply the fixes it calls for, commit and push them. \
+         Then wait for CI on the pushed commit in the foreground as the rules below say, even where the skill says to wait in the background. \
          Then record the verdict for the pushed commit, whether or not the skill mentions this step. PASS when no blocker and no confirmed bug is left on the pushed code; FAIL otherwise, and also FAIL when CI is still red. Run git status first and never record PASS with uncommitted fixes:\n\n\
          '{exe}' record-review --repo '{repo}' --branch '{head}' --sha \"$(git rev-parse HEAD)\" --verdict pass --summary \"<one line: the top remaining blocker prefixed 'thermo:' or 'bug:', or 'no blockers'>\"\n\n\
          Use --verdict fail for FAIL. Record again if you push after that.\n\n\
@@ -320,8 +322,10 @@ fn rules(pr: &Pr, kind: Kind, ws: Option<&Workspace>, checkout: Option<&Path>) -
     };
     format!(
         "{place} Leave every other checkout alone. {limits} Quote branch names in shell commands. Never force-push and never skip hooks with --no-verify. \
-         Wait for CI at most 30 minutes; if no check has started after 10 minutes, say so and stop. \
-         Finish with a short report: what you changed, what you pushed, and the CI result."
+         Wait for CI in the foreground, at most 30 minutes: this run ends when your turn does and nothing wakes it again, so a background command, watcher or monitor never reports back. \
+         Block on `gh pr checks '{url}' --watch --fail-fast` with a 10-minute command timeout, and run it again until every check has finished. If no check has started after 10 minutes, say so and stop. \
+         Finish with a short report: what you changed, what you pushed, and the CI result.",
+        url = pr.url,
     )
 }
 
@@ -1132,6 +1136,21 @@ mod tests {
         let prompt = build_prompt(Kind::Thermo, &pr, "", "");
         assert!(prompt.contains("record-review --repo 'o/r' --branch 'feat' --sha \"$(git rev-parse HEAD)\" --verdict pass"));
         assert!(!prompt.contains("the skill's final step"));
+    }
+
+    #[test]
+    fn headless_runs_wait_for_ci_in_the_foreground_before_recording() {
+        let pr = Pr { repo: "o/r".into(), url: "https://github.com/o/r/pull/7".into(), head: "feat".into(), base: "main".into(), ..Default::default() };
+        for kind in [Kind::Fix, Kind::Rebase, Kind::Thermo, Kind::Relevance, Kind::Resolve, Kind::Approve, Kind::Task] {
+            let text = rules(&pr, kind, None, None);
+            assert!(text.contains("Block on `gh pr checks 'https://github.com/o/r/pull/7' --watch --fail-fast`"), "{kind:?}");
+            assert!(text.contains("nothing wakes it again"), "{kind:?}");
+        }
+        for kind in [Kind::Thermo, Kind::Resolve] {
+            let prompt = build_prompt(kind, &pr, "", &rules(&pr, kind, None, None));
+            let wait = prompt.find("wait for CI on the pushed commit in the foreground").unwrap();
+            assert!(wait < prompt.find("record-review").unwrap(), "{kind:?}");
+        }
     }
 
     #[test]
