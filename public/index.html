@@ -409,7 +409,7 @@ const S = {
   data: null, runs: [], health: null, loading: false, error: null,
   // How each of your repos releases (from /api/releases), why one could not be checked, and releases in flight.
   plans: {}, planErrors: {}, releasing: {},
-  group: recall('group') === 'repo' ? 'repo' : 'lane', lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
+  group: recall('group') === 'repo' ? 'repo' : 'lane', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
   // The PRs whose runs show as cards under the row instead of the newest one on a line.
   runsOpen: {},
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
@@ -514,7 +514,13 @@ function retryable(pr) {
   const offered = r => resumes(r) || Object.entries(VERBS).some(([v, V]) => V.run === r.kind && !V.confirm && can(v, pr, mine))
   return [...latest.values()].filter(r => (r.status === 'failed' || r.status === 'interrupted') && offered(r))
 }
-const lanePrs = id => allPrs().filter(pr => pr.lane === id).sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt))
+// A green PR of yours whose thermo review passed has nothing left but the merge, so it leads its lane, and its
+// repository's group unless that group is sorted by date.
+const cleared = pr => !LANE[pr.lane].theirs && pr.ci === 'pass' && review(pr).state === 'pass'
+const newestFirst = (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
+const lanePrs = id => allPrs().filter(pr => pr.lane === id).sort((a, b) => cleared(b) - cleared(a) || newestFirst(a, b))
+// Each repository group keeps its own order: 'ready' (cleared PRs first) or 'date'.
+const sortOf = repo => S.sorts[repo] ??= recall(`sort:${repo}`) === 'date' ? 'date' : 'ready'
 // A finished gh action keeps its row dimmed with a check for two minutes, then the row follows GitHub again.
 const doneFor = k => S.done[k] && Date.now() - S.done[k].at < 120000 ? S.done[k].label : null
 const idle = pr => !doneFor(keyOf(pr)) && !runFor(pr) && !S.busy[keyOf(pr)]
@@ -554,9 +560,14 @@ function renderHeader() {
     .concat(LANES.map(l => ({ ...l, n: items.filter(p => p.lane === l.id).length })).filter(l => l.n))
   // A bucket that emptied takes its filter with it, so the board never looks empty behind a hidden filter.
   if (S.data && !pills.some(p => p.id === S.lane)) S.lane = 'all'
-  const group = `<div class="group-by" role="group" aria-label="Group pull requests"><span class="sub">Group by</span>${[['lane', 'Status'], ['repo', 'Repository']]
-    .map(([id, label]) => `<button class="btn btn-sm${S.group === id ? '' : ' btn-ghost'}" data-act="group" data-group="${id}" aria-pressed="${S.group === id}" title="Group by ${label.toLowerCase()} (G)">${label}</button>`).join('')}</div>`
+  const group = choose('group', S.group, 'Group pull requests', 'Group by', [['lane', 'Status', 'Group by status (G)'], ['repo', 'Repository', 'Group by repository (G)']])
   $('#filters').innerHTML = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('') + '<div class="grow"></div>' + group
+}
+
+// A two-way switch: `act` names both the handler and the data attribute that carries the choice.
+function choose(act, now, aria, label, options, attrs = '') {
+  return `<div class="group-by" role="group" aria-label="${aria}"><span class="sub">${label}</span>${options
+    .map(([id, text, tip]) => `<button class="btn btn-sm${now === id ? '' : ' btn-ghost'}" data-act="${act}" data-${act}="${id}" ${attrs} aria-pressed="${now === id}" title="${tip}">${text}</button>`).join('')}</div>`
 }
 
 function renderNotice() {
@@ -773,16 +784,22 @@ function laneBuckets() {
   }).join('')
 }
 
-// One group per repository, A to Z, its PRs in lane order, so you can plan each repo's release.
+// One group per repository, A to Z, so you can plan each repo's release. "Ready first" puts its cleared PRs on
+// top and the rest in lane order; "Date" lists them newest first.
 function repoBuckets() {
   const order = Object.fromEntries(LANES.map((l, i) => [l.id, i]))
   const shown = allPrs().filter(pr => S.lane === 'all' || pr.lane === S.lane)
   const repos = [...new Set(shown.map(pr => pr.repo))].sort((a, b) => repoName(a).localeCompare(repoName(b)) || a.localeCompare(b))
   return repos.map(repo => {
-    const list = shown.filter(pr => pr.repo === repo).sort((a, b) => order[a.lane] - order[b.lane] || Date.parse(a.createdAt) - Date.parse(b.createdAt))
+    const ready = sortOf(repo) === 'ready'
+    const list = shown.filter(pr => pr.repo === repo).sort((a, b) => (ready && (cleared(b) - cleared(a) || order[a.lane] - order[b.lane])) || newestFirst(a, b))
     const out = releasable(repo) ? leftOut(repo) : []
+    const sort = choose('sort', sortOf(repo), `Sort ${esc(repoName(repo))} pull requests`, 'Sort', [
+      ['ready', 'Ready first', 'Green PRs whose review passed on top, then the rest by status'],
+      ['date', 'Date', 'Newest first'],
+    ], `data-repo="${esc(repo)}"`)
     return `<section class="group" data-enter="${esc(`repo:${repo}`)}">
-      <div class="group-head"><h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer">${esc(repoName(repo))}</a></h2><span class="sub">${[`${list.length} open`, ...releaseInfo(repo)].join(' · ')}</span><div class="grow"></div><div class="head-acts">${repoActions(repo)}</div></div>
+      <div class="group-head"><h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer">${esc(repoName(repo))}</a></h2><span class="sub">${[`${list.length} open`, ...releaseInfo(repo)].join(' · ')}</span><div class="grow"></div><div class="head-acts">${sort}${repoActions(repo)}</div></div>
       ${out.length ? `<div class="group-note">Not in the next release: ${esc(leftOutText(out))}</div>` : ''}
       <div class="panel">${list.map(pr => row(pr, LANE[pr.lane], true)).join('')}</div>
     </section>`
@@ -1263,6 +1280,12 @@ function setGroup(group) {
   renderBoard()
 }
 
+function setSort(repo, sort) {
+  S.sorts[repo] = sort
+  remember(`sort:${repo}`, sort)
+  renderBoard()
+}
+
 // Returns whether the server took it.
 async function runVerb(id, verb, body = {}, done) {
   let ok = false
@@ -1282,6 +1305,7 @@ const ACTIONS = {
     renderBoard()
   },
   group: ({ el }) => setGroup(el.dataset.group),
+  sort: ({ el }) => setSort(el.dataset.repo, el.dataset.sort),
   login: async ({ el }) => {
     try {
       await api(`/api/login/${el.dataset.tool}`, {})
