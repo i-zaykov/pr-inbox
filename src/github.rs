@@ -119,6 +119,10 @@ pub struct Pr {
     pub can_admin: bool,
     /// An admin merge may take this PR: `admin_merge_refusal` has nothing against it.
     pub admin_mergeable: bool,
+    /// Your latest review on it approves it. The PR may still need someone else's approval.
+    pub you_approved: bool,
+    /// The Approve run may take this PR: `approve_refusal` has nothing against it.
+    pub approvable: bool,
 }
 
 impl Pr {
@@ -160,6 +164,19 @@ impl Pr {
         }
         None
     }
+
+    /// Why the Approve run, which reviews someone else's PR and approves it from your account, must not take
+    /// this PR. Your approval stands while the PR waits for another reviewer's, so it is offered again only
+    /// once someone asks for your review again.
+    pub fn approve_refusal(&self) -> Option<&'static str> {
+        if !matches!(self.lane, Lane::Waiting | Lane::Reviewed) {
+            return Some("Only someone else's PR can be approved");
+        }
+        if self.you_approved && self.lane == Lane::Reviewed {
+            return Some("You already approved it, and nobody has asked for your review again");
+        }
+        None
+    }
 }
 
 #[derive(Serialize, Clone, Default)]
@@ -190,6 +207,7 @@ const FIELDS: &str = r#"
   repository { nameWithOwner name isArchived viewerPermission }
   reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
   reviewThreads(first: 100) { nodes { isResolved } }
+  viewerLatestReview { state }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 100) { nodes {
     __typename
     ... on CheckRun { name conclusion status detailsUrl startedAt completedAt }
@@ -315,6 +333,8 @@ fn to_pr(n: &Value) -> Pr {
         writable: false,
         can_admin: text(n, "/repository/viewerPermission") == "ADMIN",
         admin_mergeable: false,
+        you_approved: text(n, "/viewerLatestReview/state") == "APPROVED",
+        approvable: false,
     };
     pr.writable = pr.write_refusal().is_none();
     pr
@@ -380,7 +400,11 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
         .iter()
         .flat_map(|&(ptr, lane)| nodes(ptr).into_iter().map(move |n| (n, lane)))
         .filter(|(n, _)| live(&n) && n["url"].as_str().is_some_and(|u| seen.insert(u.to_string())))
-        .map(|(n, lane)| Pr { lane, ..to_pr(&n) })
+        .map(|(n, lane)| {
+            let mut pr = Pr { lane, ..to_pr(&n) };
+            pr.approvable = pr.approve_refusal().is_none();
+            pr
+        })
         .collect();
     let settling = mine.iter().any(|p| p.mergeable == Mergeable::Unknown);
     Ok(Snapshot { fetched_at: now, login: text(doc, "/data/viewer/login"), mine, others, warning, settling })
@@ -549,6 +573,19 @@ mod tests {
             "reviews": { "nodes": [pr(2)] }, "assigned": { "nodes": [] }, "reviewed": { "nodes": [pr(1), pr(2), pr(3)] } } });
         let lanes: Vec<(String, Lane)> = parse_snapshot(&doc).unwrap().others.into_iter().map(|p| (p.url, p.lane)).collect();
         assert_eq!(lanes, [("https://github.com/o/r/pull/2".into(), Lane::Waiting), ("https://github.com/o/r/pull/3".into(), Lane::Reviewed)]);
+    }
+
+    #[test]
+    fn your_approval_holds_until_your_review_is_asked_for_again() {
+        let pr = |n: u64, state: &str| json!({ "number": n, "url": format!("https://github.com/o/r/pull/{n}"), "repository": { "isArchived": false }, "viewerLatestReview": { "state": state } });
+        let doc = json!({ "data": { "viewer": { "login": "me", "pullRequests": { "nodes": [] } },
+            "reviews": { "nodes": [pr(1, "APPROVED")] }, "assigned": { "nodes": [] },
+            "reviewed": { "nodes": [pr(1, "APPROVED"), pr(2, "APPROVED"), pr(3, "COMMENTED")] } } });
+        let got: Vec<(u64, bool, bool)> = parse_snapshot(&doc).unwrap().others.iter().map(|p| (p.number, p.you_approved, p.approvable)).collect();
+        // #1 asks for your review again, #2 waits on someone else's approval, #3 you only commented on.
+        assert_eq!(got, [(1, true, true), (2, true, false), (3, false, true)]);
+        let yours = Pr { lane: Lane::Ready, ..Default::default() };
+        assert_eq!(yours.approve_refusal(), Some("Only someone else's PR can be approved"));
     }
 
     #[test]

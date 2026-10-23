@@ -124,6 +124,7 @@ button.state:hover { color: #fff; }
 .updated { display: inline-flex; align-items: center; gap: 8px; }
 .filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 14px; }
 .group-by { display: flex; align-items: center; gap: 8px; }
+.group-by + .group-by { margin-left: 8px; }
 
 /* notices */
 .notice { padding-top: 20px; }
@@ -341,7 +342,8 @@ const VERBS = {
     go: 'Check it' } },
   address: { run: 'task', note: ADDRESS, writes: true },
   // Someone else's PR: Claude reviews it without changing it, then approves or requests changes from your account.
-  approve: { menu: 'Thermo review, then approve…', run: 'approve', writes: true, when: pr => LANE[pr.lane].theirs, confirm: {
+  // The server says when (approvable): not once you approved, until someone asks for your review again.
+  approve: { menu: 'Thermo review, then approve…', run: 'approve', writes: true, when: pr => pr.approvable, confirm: {
     title: pr => `Thermo review ${short(pr)}, then approve?`,
     body: pr => `<p style="margin:0">Claude runs the thermo-nuclear review on <b>${esc(pr.title)}</b> by @${esc(pr.author)} without changing the PR.</p>
        <p style="margin:0">If nothing critical turns up, <b>Claude approves it from your account</b> with a short, funny comment. If something critical does, it <b>requests changes</b> and lists what to fix.</p>`,
@@ -409,7 +411,7 @@ const S = {
   data: null, runs: [], health: null, loading: false, error: null,
   // How each of your repos releases (from /api/releases), why one could not be checked, and releases in flight.
   plans: {}, planErrors: {}, releasing: {},
-  group: recall('group') === 'repo' ? 'repo' : 'lane', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
+  group: recall('group') === 'repo' ? 'repo' : 'lane', show: recall('show') === 'mine' ? 'mine' : 'all', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
   // The PRs whose runs show as cards under the row instead of the newest one on a line.
   runsOpen: {},
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
@@ -498,6 +500,8 @@ function focusEnd(id) {
 function allPrs() {
   return S.data ? [...S.data.mine, ...S.data.others] : []
 }
+// The PRs the board lists: everyone's, or with "Show: Mine" only yours. Runs and lookups still see them all.
+const boardPrs = () => S.show === 'mine' ? S.data?.mine ?? [] : allPrs()
 
 const findPr = k => allPrs().find(pr => keyOf(pr) === k)
 const runFor = pr => S.runs.find(r => r.prUrl === pr.url && active(r))
@@ -518,7 +522,7 @@ function retryable(pr) {
 // repository's group unless that group is sorted by date.
 const cleared = pr => !LANE[pr.lane].theirs && pr.ci === 'pass' && review(pr).state === 'pass'
 const newestFirst = (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)
-const lanePrs = id => allPrs().filter(pr => pr.lane === id).sort((a, b) => cleared(b) - cleared(a) || newestFirst(a, b))
+const lanePrs = id => boardPrs().filter(pr => pr.lane === id).sort((a, b) => cleared(b) - cleared(a) || newestFirst(a, b))
 // Each repository group keeps its own order: 'ready' (cleared PRs first) or 'date'.
 const sortOf = repo => S.sorts[repo] ??= recall(`sort:${repo}`) === 'date' ? 'date' : 'ready'
 // A finished gh action keeps its row dimmed with a check for two minutes, then the row follows GitHub again.
@@ -552,7 +556,7 @@ const lastSaid = r => r.events.findLast(e => e.kind === 'result' || e.kind === '
 // ---------- header and notices ----------
 
 function renderHeader() {
-  const items = allPrs()
+  const items = boardPrs()
   $('#who').textContent = S.data ? `@${S.data.login} · ${items.length} open across ${plural(new Set(items.map(pr => pr.repo)).size, 'repo')}` : ''
   $('#refresh-btn').classList.toggle('spinning', S.loading)
   $('#updated').innerHTML = S.loading ? '<span class="spin" aria-label="Refreshing"></span>Refreshing' : S.data ? `Updated ${ago(S.data.fetchedAt)}` : ''
@@ -560,8 +564,9 @@ function renderHeader() {
     .concat(LANES.map(l => ({ ...l, n: items.filter(p => p.lane === l.id).length })).filter(l => l.n))
   // A bucket that emptied takes its filter with it, so the board never looks empty behind a hidden filter.
   if (S.data && !pills.some(p => p.id === S.lane)) S.lane = 'all'
+  const show = choose('show', S.show, 'Whose pull requests to show', 'Show', [['all', 'Everyone', 'Your PRs and the ones you review'], ['mine', 'Mine', 'Only your own PRs (M)']])
   const group = choose('group', S.group, 'Group pull requests', 'Group by', [['lane', 'Status', 'Group by status (G)'], ['repo', 'Repository', 'Group by repository (G)']])
-  $('#filters').innerHTML = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('') + '<div class="grow"></div>' + group
+  $('#filters').innerHTML = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('') + '<div class="grow"></div>' + show + group
 }
 
 // A two-way switch: `act` names both the handler and the data attribute that carries the choice.
@@ -643,7 +648,8 @@ function tags(pr, lane, byRepo) {
   else ({ pass: () => tag('CI passing', 'tag-ok'), fail: () => tag('CI failing', 'tag-bad'), running: () => tag('CI running', 'tag-mute'), none: () => tag('No checks', 'tag-mute') })[pr.ci]()
   if (pr.mergeable === 'CONFLICTING') tag('Conflicts', 'tag-bad')
   if (pr.mergeState === 'BEHIND') tag('Behind base', 'tag-warn')
-  if (pr.review === 'REVIEW_REQUIRED') tag('Needs approval', 'tag-mute')
+  if (pr.youApproved) tag('✓ You approved', 'tag-ok')
+  if (pr.review === 'REVIEW_REQUIRED') tag(pr.youApproved ? 'Needs another approval' : 'Needs approval', 'tag-mute')
   if (pr.review === 'CHANGES_REQUESTED') tag('Changes requested', 'tag-bad')
   if (pr.review === 'APPROVED') tag('Approved', 'tag-ok')
   if (pr.isDraft) tag('Draft', 'tag-mute')
@@ -788,7 +794,7 @@ function laneBuckets() {
 // top and the rest in lane order; "Date" lists them newest first.
 function repoBuckets() {
   const order = Object.fromEntries(LANES.map((l, i) => [l.id, i]))
-  const shown = allPrs().filter(pr => S.lane === 'all' || pr.lane === S.lane)
+  const shown = boardPrs().filter(pr => S.lane === 'all' || pr.lane === S.lane)
   const repos = [...new Set(shown.map(pr => pr.repo))].sort((a, b) => repoName(a).localeCompare(repoName(b)) || a.localeCompare(b))
   return repos.map(repo => {
     const ready = sortOf(repo) === 'ready'
@@ -1280,6 +1286,13 @@ function setGroup(group) {
   renderBoard()
 }
 
+function setShow(show) {
+  S.show = show
+  remember('show', show)
+  renderHeader()
+  renderBoard()
+}
+
 function setSort(repo, sort) {
   S.sorts[repo] = sort
   remember(`sort:${repo}`, sort)
@@ -1305,6 +1318,7 @@ const ACTIONS = {
     renderBoard()
   },
   group: ({ el }) => setGroup(el.dataset.group),
+  show: ({ el }) => setShow(el.dataset.show),
   sort: ({ el }) => setSort(el.dataset.repo, el.dataset.sort),
   login: async ({ el }) => {
     try {
@@ -1430,6 +1444,7 @@ document.addEventListener('keydown', ev => {
   if (t.matches('input, textarea') || S.dialog || ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (ev.key === 'r') loadPrs()
   if (ev.key === 'g') setGroup(S.group === 'repo' ? 'lane' : 'repo')
+  if (ev.key === 'm') setShow(S.show === 'mine' ? 'all' : 'mine')
 })
 document.querySelectorAll('[data-icon]').forEach(el => { el.outerHTML = icon(el.dataset.icon) })
 document.addEventListener('visibilitychange', () => {

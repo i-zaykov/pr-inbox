@@ -865,6 +865,11 @@ impl Store {
                 return Err(RunError::Invalid(why));
             }
         }
+        if kind == Kind::Approve {
+            if let Some(why) = pr.approve_refusal() {
+                return Err(RunError::Invalid(why.into()));
+            }
+        }
         let checkout = Some(checkouts_dir().join(&pr.name)).filter(|dir| dir.join(".git").exists());
         // A writing run gets the PR's own worktree. When another writing run is already on this PR, the
         // worktree is in use: queue behind it in the same directory instead of resetting it now.
