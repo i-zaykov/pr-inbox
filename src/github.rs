@@ -54,6 +54,17 @@ pub enum ReviewDecision {
     ReviewRequired,
 }
 
+/// Your latest review on someone else's PR, as GitHub names its state.
+#[derive(Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum YourReview {
+    Approved,
+    ChangesRequested,
+    Commented,
+    Dismissed,
+    Pending,
+}
+
 /// The bucket a PR lands in on the page; the ids are the page's LANES ids.
 #[derive(Clone, Copy, PartialEq, Eq, Serialize, Debug, Default)]
 #[serde(rename_all = "lowercase")]
@@ -119,8 +130,8 @@ pub struct Pr {
     pub can_admin: bool,
     /// An admin merge may take this PR: `admin_merge_refusal` has nothing against it.
     pub admin_mergeable: bool,
-    /// Your latest review on it approves it. The PR may still need someone else's approval.
-    pub you_approved: bool,
+    /// Your latest review on it, if any. An approval may still leave the PR needing someone else's.
+    pub your_review: Option<YourReview>,
     /// The Approve run may take this PR: `approve_refusal` has nothing against it.
     pub approvable: bool,
 }
@@ -172,7 +183,7 @@ impl Pr {
         if !matches!(self.lane, Lane::Waiting | Lane::Reviewed) {
             return Some("Only someone else's PR can be approved");
         }
-        if self.you_approved && self.lane == Lane::Reviewed {
+        if self.your_review == Some(YourReview::Approved) && self.lane == Lane::Reviewed {
             return Some("You already approved it, and nobody has asked for your review again");
         }
         None
@@ -333,7 +344,8 @@ fn to_pr(n: &Value) -> Pr {
         writable: false,
         can_admin: text(n, "/repository/viewerPermission") == "ADMIN",
         admin_mergeable: false,
-        you_approved: text(n, "/viewerLatestReview/state") == "APPROVED",
+        // No review, or a state this binary does not know, reads as None.
+        your_review: serde_json::from_value(n["viewerLatestReview"]["state"].clone()).ok(),
         approvable: false,
     };
     pr.writable = pr.write_refusal().is_none();
@@ -581,9 +593,11 @@ mod tests {
         let doc = json!({ "data": { "viewer": { "login": "me", "pullRequests": { "nodes": [] } },
             "reviews": { "nodes": [pr(1, "APPROVED")] }, "assigned": { "nodes": [] },
             "reviewed": { "nodes": [pr(1, "APPROVED"), pr(2, "APPROVED"), pr(3, "COMMENTED")] } } });
-        let got: Vec<(u64, bool, bool)> = parse_snapshot(&doc).unwrap().others.iter().map(|p| (p.number, p.you_approved, p.approvable)).collect();
+        let got: Vec<(u64, Option<YourReview>, bool)> = parse_snapshot(&doc).unwrap().others.iter().map(|p| (p.number, p.your_review, p.approvable)).collect();
         // #1 asks for your review again, #2 waits on someone else's approval, #3 you only commented on.
-        assert_eq!(got, [(1, true, true), (2, true, false), (3, false, true)]);
+        assert_eq!(got, [(1, Some(YourReview::Approved), true), (2, Some(YourReview::Approved), false), (3, Some(YourReview::Commented), true)]);
+        assert_eq!(to_pr(&json!({ "viewerLatestReview": { "state": "CHANGES_REQUESTED" } })).your_review, Some(YourReview::ChangesRequested));
+        assert_eq!(to_pr(&json!({ "viewerLatestReview": null })).your_review, None);
         let yours = Pr { lane: Lane::Ready, ..Default::default() };
         assert_eq!(yours.approve_refusal(), Some("Only someone else's PR can be approved"));
     }

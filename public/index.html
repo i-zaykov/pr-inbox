@@ -122,9 +122,11 @@ button.state:hover { color: #fff; }
 .logo { width: 32px; height: 32px; border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
 .top h1 { font-size: 20px; }
 .updated { display: inline-flex; align-items: center; gap: 8px; }
-.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding-bottom: 14px; }
+/* The pills wrap in their own column, so the view switches keep one spot whatever the filter shows. */
+.filters { display: flex; align-items: flex-start; gap: 8px 24px; padding-bottom: 14px; }
+.pills { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.views { flex: none; display: flex; align-items: center; gap: 16px; }
 .group-by { display: flex; align-items: center; gap: 8px; }
-.group-by + .group-by { margin-left: 8px; }
 
 /* notices */
 .notice { padding-top: 20px; }
@@ -281,6 +283,8 @@ button.state:hover { color: #fff; }
   .pr-acts { flex-basis: 100%; justify-content: flex-start; padding-left: 24px; }
   .chip .t { max-width: 70vw; }
   .strip-runs { padding-left: 16px; }
+  .filters { flex-wrap: wrap; }
+  .views { flex: 1 1 100%; flex-wrap: wrap; gap: 8px 16px; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
 </style>
@@ -411,7 +415,7 @@ const S = {
   data: null, runs: [], health: null, loading: false, error: null,
   // How each of your repos releases (from /api/releases), why one could not be checked, and releases in flight.
   plans: {}, planErrors: {}, releasing: {},
-  group: recall('group') === 'repo' ? 'repo' : 'lane', show: recall('show') === 'mine' ? 'mine' : 'all', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
+  group: recall('group') === 'repo' ? 'repo' : 'lane', show: recall('show') === 'needs' ? 'needs' : 'all', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
   // The PRs whose runs show as cards under the row instead of the newest one on a line.
   runsOpen: {},
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
@@ -500,8 +504,11 @@ function focusEnd(id) {
 function allPrs() {
   return S.data ? [...S.data.mine, ...S.data.others] : []
 }
-// The PRs the board lists: everyone's, or with "Show: Mine" only yours. Runs and lookups still see them all.
-const boardPrs = () => S.show === 'mine' ? S.data?.mine ?? [] : allPrs()
+// Someone else's PR you approved or asked changes on, and nobody has asked you to look at again.
+const handled = pr => pr.lane === 'reviewed' && ['APPROVED', 'CHANGES_REQUESTED'].includes(pr.yourReview)
+// The PRs the board lists: all of them, or with "Show: Needs me" all but the handled ones. Runs and lookups
+// still see every PR.
+const boardPrs = () => S.show === 'needs' ? allPrs().filter(pr => !handled(pr)) : allPrs()
 
 const findPr = k => allPrs().find(pr => keyOf(pr) === k)
 const runFor = pr => S.runs.find(r => r.prUrl === pr.url && active(r))
@@ -564,9 +571,13 @@ function renderHeader() {
     .concat(LANES.map(l => ({ ...l, n: items.filter(p => p.lane === l.id).length })).filter(l => l.n))
   // A bucket that emptied takes its filter with it, so the board never looks empty behind a hidden filter.
   if (S.data && !pills.some(p => p.id === S.lane)) S.lane = 'all'
-  const show = choose('show', S.show, 'Whose pull requests to show', 'Show', [['all', 'Everyone', 'Your PRs and the ones you review'], ['mine', 'Mine', 'Only your own PRs (M)']])
+  const show = choose('show', S.show, 'Which pull requests to show', 'Show', [
+    ['all', 'Everyone', 'Every PR in your inbox (N)'],
+    ['needs', 'Needs me', 'Hides PRs you already approved or asked changes on, until someone asks for your review again (N)'],
+  ])
   const group = choose('group', S.group, 'Group pull requests', 'Group by', [['lane', 'Status', 'Group by status (G)'], ['repo', 'Repository', 'Group by repository (G)']])
-  $('#filters').innerHTML = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('') + '<div class="grow"></div>' + show + group
+  const pillsHtml = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('')
+  $('#filters').innerHTML = `<div class="pills">${pillsHtml}</div><div class="views">${show}${group}</div>`
 }
 
 // A two-way switch: `act` names both the handler and the data attribute that carries the choice.
@@ -648,8 +659,9 @@ function tags(pr, lane, byRepo) {
   else ({ pass: () => tag('CI passing', 'tag-ok'), fail: () => tag('CI failing', 'tag-bad'), running: () => tag('CI running', 'tag-mute'), none: () => tag('No checks', 'tag-mute') })[pr.ci]()
   if (pr.mergeable === 'CONFLICTING') tag('Conflicts', 'tag-bad')
   if (pr.mergeState === 'BEHIND') tag('Behind base', 'tag-warn')
-  if (pr.youApproved) tag('✓ You approved', 'tag-ok')
-  if (pr.review === 'REVIEW_REQUIRED') tag(pr.youApproved ? 'Needs another approval' : 'Needs approval', 'tag-mute')
+  const approved = pr.yourReview === 'APPROVED'
+  if (approved) tag('✓ You approved', 'tag-ok')
+  if (pr.review === 'REVIEW_REQUIRED') tag(approved ? 'Needs another approval' : 'Needs approval', 'tag-mute')
   if (pr.review === 'CHANGES_REQUESTED') tag('Changes requested', 'tag-bad')
   if (pr.review === 'APPROVED') tag('Approved', 'tag-ok')
   if (pr.isDraft) tag('Draft', 'tag-mute')
@@ -1444,7 +1456,7 @@ document.addEventListener('keydown', ev => {
   if (t.matches('input, textarea') || S.dialog || ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (ev.key === 'r') loadPrs()
   if (ev.key === 'g') setGroup(S.group === 'repo' ? 'lane' : 'repo')
-  if (ev.key === 'm') setShow(S.show === 'mine' ? 'all' : 'mine')
+  if (ev.key === 'n') setShow(S.show === 'needs' ? 'all' : 'needs')
 })
 document.querySelectorAll('[data-icon]').forEach(el => { el.outerHTML = icon(el.dataset.icon) })
 document.addEventListener('visibilitychange', () => {
