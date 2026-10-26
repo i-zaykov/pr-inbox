@@ -558,9 +558,9 @@ const mergeable = repo => lanePrs('ready').filter(pr => pr.repo === repo && idle
 // Your idle PRs a tick can take: a Ready one merges the normal way, and one held back only by its approval or by
 // being behind takes an admin merge.
 const pickable = pr => !LANE[pr.lane].theirs && idle(pr) && (pr.lane === 'ready' && can('merge', pr, true) || can('admin', pr, true))
-// The ticked PRs that are still pickable, split the way the Merge & release dialog takes them.
-function picks() {
-  const prs = [...S.picked].map(findPr).filter(pr => pr && pickable(pr))
+// The ticked PRs (or just `from`) that are still pickable, split the way the Merge & release dialog takes them.
+function picks(from = [...S.picked].map(findPr)) {
+  const prs = from.filter(pr => pr && pickable(pr))
   return { prs, keys: prs.filter(pr => pr.lane === 'ready').map(keyOf), admin: prs.filter(pr => pr.lane !== 'ready').map(keyOf) }
 }
 // Why GitHub would not merge a PR yet, in a few words: what keeps it out of Merge & release.
@@ -820,18 +820,28 @@ function renderPicked() {
   const appear = !el.firstChild
   const n = prs.length
   const repos = [...new Set(prs.map(pr => pr.repo))]
-  const releases = repos.filter(releasable)
   const detail = () => [repos.length > 1 ? `in ${plural(repos.length, 'repo')}` : `in ${esc(repoName(repos[0]))}`, admin.length ? `${admin.length} by admin merge` : ''].filter(Boolean).join(' · ')
   const what = n ? `<b>${plural(n, 'PR')} selected</b> <span class="sub">${detail()}</span>` : `Select all ${offered} that can merge`
-  const tip = !n ? 'Tick the PRs to merge first' : releases.length ? `Squash-merge, then release ${releases.map(repoName).join(', ')}` : 'None of these repos releases, so they can only merge'
   el.innerHTML = `<div class="pick-bar${appear ? ' anim' : ''}" role="region" aria-label="Selected pull requests">
     <label class="check">${pickAll(shown)}<span>${what}</span></label><div class="grow"></div>
-    ${n ? '<button class="btn btn-sm btn-ghost" data-act="pick-clear" title="Untick all (Esc)">Clear</button>' : ''}
-    <button class="btn btn-sm" data-act="pick-go" data-release="false" title="${n ? 'Squash-merge, no release' : esc(tip)}"${n ? '' : ' disabled'}>Merge${n ? ' ' + n : ''}</button>
-    <button class="btn btn-sm btn-primary" data-act="pick-go" data-release="true" title="${esc(tip)}"${releases.length ? '' : ' disabled'}>${icon('rocket', 14)}Merge &amp; release${n ? ' ' + n : ''}</button>
+    ${n ? '<button class="btn btn-sm btn-ghost" data-act="pick-clear" title="Untick all (Esc)">Clear</button>' : ''}${goButtons(prs)}
   </div>`
   mixed(el)
 }
+
+// Merge and Merge & release for the ticked `prs`, greyed out while there are none. `scoped`: the buttons sit in a
+// group's heading and take only its ticks; the bar's take every tick.
+function goButtons(prs, scoped = false) {
+  const n = prs.length
+  const releases = [...new Set(prs.map(pr => pr.repo))].filter(releasable)
+  const tip = !n ? 'Tick the PRs to merge first' : releases.length ? `Squash-merge, then release ${releases.map(repoName).join(', ')}` : 'None of these repos releases, so they can only merge'
+  const attrs = scoped ? ` data-keys="${esc(JSON.stringify(prs.map(keyOf)))}"` : ''
+  return `<button class="btn btn-sm" data-act="pick-go" data-release="false"${attrs} title="${n ? 'Squash-merge, no release' : esc(tip)}"${n ? '' : ' disabled'}>Merge${n ? ' ' + n : ''}</button>
+    <button class="btn btn-sm btn-primary" data-act="pick-go" data-release="true"${attrs} title="${esc(tip)}"${releases.length ? '' : ' disabled'}>${icon('rocket', 14)}Merge &amp; release${n ? ' ' + n : ''}</button>`
+}
+
+// A group's ticked PRs; once there are any, its heading trades its own buttons for goButtons over them.
+const tickedIn = prs => prs.filter(pr => S.picked.has(keyOf(pr)))
 
 // HTML has no attribute for a half-ticked box, so the select-all ticks get theirs after each render.
 const mixed = root => root.querySelectorAll('[data-mixed]').forEach(el => { el.indeterminate = true })
@@ -859,8 +869,9 @@ function laneBuckets() {
     const busy = S.bulkBusy[l.id]
     const bulk = l.bulk && open.length > 1 && !busy ? `<button class="btn btn-sm" data-act="bulk-open" data-lane="${l.id}">${esc(l.bulk.label)} ${open.length}</button>` : ''
     const ship = l.id === 'ready' && !busy && shippable().length > 1 ? `<button class="btn btn-sm btn-primary" data-act="ship-open">${icon('rocket', 14)}Merge &amp; release ${shippable().length}</button>` : ''
+    const ticked = tickedIn(list)
     return `<section class="group" data-enter="lane:${l.id}" id="lane-${l.id}">
-      <div class="group-head">${pickAll(list)}<span class="dot" style="--dot:${l.dot}"></span><h2>${esc(l.label)}</h2><span class="sub">${plural(list.length, 'PR')} · ${esc(l.hint)}</span><div class="grow"></div><div class="head-acts">${bulk}${ship}</div></div>
+      <div class="group-head">${pickAll(list)}<span class="dot" style="--dot:${l.dot}"></span><h2>${esc(l.label)}</h2><span class="sub">${plural(list.length, 'PR')} · ${esc(l.hint)}</span><div class="grow"></div><div class="head-acts">${ticked.length ? goButtons(ticked, true) : bulk + ship}</div></div>
       <div class="panel">${list.map(pr => row(pr, l)).join('')}</div>
     </section>`
   }).join('')
@@ -875,13 +886,15 @@ function repoBuckets() {
   return repos.map(repo => {
     const ready = sortOf(repo) === 'ready'
     const list = shown.filter(pr => pr.repo === repo).sort((a, b) => (ready && (cleared(b) - cleared(a) || order[a.lane] - order[b.lane])) || newestFirst(a, b))
-    const out = releasable(repo) ? leftOut(repo) : []
+    // A ticked PR goes out with Merge & release, so the note leaves it out.
+    const out = releasable(repo) ? leftOut(repo).filter(pr => !S.picked.has(keyOf(pr))) : []
+    const ticked = tickedIn(list)
     const sort = choose('sort', sortOf(repo), `Sort ${esc(repoName(repo))} pull requests`, 'Sort', [
       ['ready', 'Ready first', 'Green PRs whose review passed on top, then the rest by status'],
       ['date', 'Date', 'Newest first'],
     ], `data-repo="${esc(repo)}"`)
     return `<section class="group" data-enter="${esc(`repo:${repo}`)}">
-      <div class="group-head">${pickAll(list)}<h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer">${esc(repoName(repo))}</a></h2><span class="sub">${[`${list.length} open`, ...releaseInfo(repo)].join(' · ')}</span><div class="grow"></div><div class="head-acts">${sort}${repoActions(repo)}</div></div>
+      <div class="group-head">${pickAll(list)}<h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer">${esc(repoName(repo))}</a></h2><span class="sub">${[`${list.length} open`, ...releaseInfo(repo)].join(' · ')}</span><div class="grow"></div><div class="head-acts">${sort}${ticked.length ? goButtons(ticked, true) : repoActions(repo)}</div></div>
       ${out.length ? `<div class="group-note">Not in the next release: ${esc(leftOutText(out))}</div>` : ''}
       <div class="panel">${list.map(pr => row(pr, LANE[pr.lane], true)).join('')}</div>
     </section>`
@@ -1471,9 +1484,9 @@ const ACTIONS = {
     renderBoard()
   },
   'pick-clear': () => { S.picked.clear(); renderBoard() },
-  // The bar's two buttons open the same dialog, so you read the list before anything merges.
+  // Both buttons open the same dialog, so you read the list before anything merges. A heading's take only its ticks.
   'pick-go': ({ el }) => {
-    const { keys, admin } = picks()
+    const { keys, admin } = picks(el.dataset.keys ? JSON.parse(el.dataset.keys).map(findPr) : undefined)
     openShip(keys, { admin, offer: admin, release: el.dataset.release === 'true' })
   },
   'ship-go': () => ship(S.dialog),
