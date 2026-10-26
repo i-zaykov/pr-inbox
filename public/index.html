@@ -130,6 +130,8 @@ button.state:hover { color: #fff; }
 /* What you ticked, and the two things it can do. */
 .pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 14px; padding: 8px 8px 8px 16px; border-radius: 10px; background: var(--raise); border: 1px solid var(--line-strong); }
 .pick-bar.anim { animation: drop .16s ease-out both; }
+.pick-bar .check { color: var(--text); }
+.pick-bar .pick { margin: 0; }
 
 /* notices */
 .notice { padding-top: 20px; }
@@ -165,6 +167,8 @@ button.state:hover { color: #fff; }
 .group { position: relative; display: flex; flex-direction: column; gap: 10px; scroll-margin-top: 130px; }
 .group-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; padding: 0 4px; }
 .group-head > .dot { align-self: center; }
+/* The heading's select-all tick sits right above the rows' ticks. */
+.group-head > .pick { align-self: center; margin: 0 -2px 0 13px; }
 .group-head h2 { font-size: 18px; }
 .group-head h2 a { color: inherit; text-decoration: none; }
 .group-head h2 a:hover { text-decoration: underline; }
@@ -798,35 +802,53 @@ function renderBoard() {
   keepFocus(() => {
     const scroll = saveScroll(board)
     board.innerHTML = hero() + boardBody()
+    mixed(board)
     animateNew(board)
     restoreScroll(board, scroll)
   })
 }
 
-// The bar under the filters while anything is ticked. A tick whose PR merged, moved lanes or got busy goes with it.
+// The bar under the filters while any PR on the board can be ticked: a select-all tick, and what the ticks can
+// do. A tick whose PR merged, moved lanes or got busy goes with it.
 function renderPicked() {
   const { prs, admin } = picks()
   S.picked = new Set(prs.map(keyOf))
   const el = $('#picked')
-  if (!prs.length) { el.innerHTML = ''; return }
+  const shown = boardPrs().filter(pr => S.lane === 'all' || pr.lane === S.lane)
+  const offered = shown.filter(pickable).length
+  if (!prs.length && !offered) { el.innerHTML = ''; return }
   const appear = !el.firstChild
   const n = prs.length
   const repos = [...new Set(prs.map(pr => pr.repo))]
   const releases = repos.filter(releasable)
-  const detail = [repos.length > 1 ? `in ${plural(repos.length, 'repo')}` : `in ${esc(repoName(repos[0]))}`, admin.length ? `${admin.length} by admin merge` : ''].filter(Boolean).join(' · ')
-  const tip = releases.length ? `Squash-merge, then release ${releases.map(repoName).join(', ')}` : 'None of these repos releases, so they can only merge'
+  const detail = () => [repos.length > 1 ? `in ${plural(repos.length, 'repo')}` : `in ${esc(repoName(repos[0]))}`, admin.length ? `${admin.length} by admin merge` : ''].filter(Boolean).join(' · ')
+  const what = n ? `<b>${plural(n, 'PR')} selected</b> <span class="sub">${detail()}</span>` : `Select all ${offered} that can merge`
+  const tip = !n ? 'Tick the PRs to merge first' : releases.length ? `Squash-merge, then release ${releases.map(repoName).join(', ')}` : 'None of these repos releases, so they can only merge'
   el.innerHTML = `<div class="pick-bar${appear ? ' anim' : ''}" role="region" aria-label="Selected pull requests">
-    <span><b>${plural(n, 'PR')} selected</b> <span class="sub">${detail}</span></span><div class="grow"></div>
-    <button class="btn btn-sm btn-ghost" data-act="pick-clear" title="Untick all (Esc)">Clear</button>
-    <button class="btn btn-sm" data-act="pick-go" data-release="false" title="Squash-merge, no release">Merge ${n}</button>
-    <button class="btn btn-sm btn-primary" data-act="pick-go" data-release="true" title="${esc(tip)}"${releases.length ? '' : ' disabled'}>${icon('rocket', 14)}Merge &amp; release ${n}</button>
+    <label class="check">${pickAll(shown)}<span>${what}</span></label><div class="grow"></div>
+    ${n ? '<button class="btn btn-sm btn-ghost" data-act="pick-clear" title="Untick all (Esc)">Clear</button>' : ''}
+    <button class="btn btn-sm" data-act="pick-go" data-release="false" title="${n ? 'Squash-merge, no release' : esc(tip)}"${n ? '' : ' disabled'}>Merge${n ? ' ' + n : ''}</button>
+    <button class="btn btn-sm btn-primary" data-act="pick-go" data-release="true" title="${esc(tip)}"${releases.length ? '' : ' disabled'}>${icon('rocket', 14)}Merge &amp; release${n ? ' ' + n : ''}</button>
   </div>`
+  mixed(el)
 }
+
+// HTML has no attribute for a half-ticked box, so the select-all ticks get theirs after each render.
+const mixed = root => root.querySelectorAll('[data-mixed]').forEach(el => { el.indeterminate = true })
 
 function boardBody() {
   if (!S.data) return S.error ? '' : '<div class="panel"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>'
   const buckets = S.group === 'repo' ? repoBuckets() : laneBuckets()
   return buckets || `<div class="panel empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
+}
+
+// The tick in a group's heading: it ticks every PR of the group a tick can take, and unticks them once all are.
+function pickAll(prs) {
+  const keys = prs.filter(pickable).map(keyOf)
+  if (!keys.length) return '<span class="pick" aria-hidden="true"></span>'
+  const n = keys.filter(k => S.picked.has(k)).length
+  const tip = n === keys.length ? 'Untick all' : `Tick all ${keys.length} that can merge`
+  return `<input type="checkbox" class="pick" data-act="pick-all" data-keys="${esc(JSON.stringify(keys))}" aria-label="${tip}" title="${tip}"${n === keys.length ? ' checked' : n ? ' data-mixed' : ''}>`
 }
 
 function laneBuckets() {
@@ -838,7 +860,7 @@ function laneBuckets() {
     const bulk = l.bulk && open.length > 1 && !busy ? `<button class="btn btn-sm" data-act="bulk-open" data-lane="${l.id}">${esc(l.bulk.label)} ${open.length}</button>` : ''
     const ship = l.id === 'ready' && !busy && shippable().length > 1 ? `<button class="btn btn-sm btn-primary" data-act="ship-open">${icon('rocket', 14)}Merge &amp; release ${shippable().length}</button>` : ''
     return `<section class="group" data-enter="lane:${l.id}" id="lane-${l.id}">
-      <div class="group-head"><span class="dot" style="--dot:${l.dot}"></span><h2>${esc(l.label)}</h2><span class="sub">${plural(list.length, 'PR')} · ${esc(l.hint)}</span><div class="grow"></div><div class="head-acts">${bulk}${ship}</div></div>
+      <div class="group-head">${pickAll(list)}<span class="dot" style="--dot:${l.dot}"></span><h2>${esc(l.label)}</h2><span class="sub">${plural(list.length, 'PR')} · ${esc(l.hint)}</span><div class="grow"></div><div class="head-acts">${bulk}${ship}</div></div>
       <div class="panel">${list.map(pr => row(pr, l)).join('')}</div>
     </section>`
   }).join('')
@@ -859,7 +881,7 @@ function repoBuckets() {
       ['date', 'Date', 'Newest first'],
     ], `data-repo="${esc(repo)}"`)
     return `<section class="group" data-enter="${esc(`repo:${repo}`)}">
-      <div class="group-head"><h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer">${esc(repoName(repo))}</a></h2><span class="sub">${[`${list.length} open`, ...releaseInfo(repo)].join(' · ')}</span><div class="grow"></div><div class="head-acts">${sort}${repoActions(repo)}</div></div>
+      <div class="group-head">${pickAll(list)}<h2><a href="https://github.com/${esc(repo)}" target="_blank" rel="noreferrer">${esc(repoName(repo))}</a></h2><span class="sub">${[`${list.length} open`, ...releaseInfo(repo)].join(' · ')}</span><div class="grow"></div><div class="head-acts">${sort}${repoActions(repo)}</div></div>
       ${out.length ? `<div class="group-note">Not in the next release: ${esc(leftOutText(out))}</div>` : ''}
       <div class="panel">${list.map(pr => row(pr, LANE[pr.lane], true)).join('')}</div>
     </section>`
@@ -1444,6 +1466,10 @@ const ACTIONS = {
   'ship-open': ({ el }) => openShip(shippable(el.dataset.repo).map(keyOf)),
   'release-open': ({ el }) => openShip([], { repo: el.dataset.repo }),
   pick: ({ el, k }) => { if (el.checked) S.picked.add(k); else S.picked.delete(k); renderBoard() },
+  'pick-all': ({ el }) => {
+    for (const k of JSON.parse(el.dataset.keys)) if (el.checked) S.picked.add(k); else S.picked.delete(k)
+    renderBoard()
+  },
   'pick-clear': () => { S.picked.clear(); renderBoard() },
   // The bar's two buttons open the same dialog, so you read the list before anything merges.
   'pick-go': ({ el }) => {
