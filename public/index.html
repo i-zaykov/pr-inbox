@@ -127,6 +127,9 @@ button.state:hover { color: #fff; }
 .pills { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .views { flex: none; display: flex; align-items: center; gap: 16px; }
 .group-by { display: flex; align-items: center; gap: 8px; }
+/* What you ticked, and the two things it can do. */
+.pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 14px; padding: 8px 8px 8px 16px; border-radius: 10px; background: var(--raise); border: 1px solid var(--line-strong); }
+.pick-bar.anim { animation: drop .16s ease-out both; }
 
 /* notices */
 .notice { padding-top: 20px; }
@@ -181,6 +184,9 @@ button.state:hover { color: #fff; }
 .author img { width: 16px; height: 16px; border-radius: 50%; background: var(--raise); }
 .row { display: flex; flex-wrap: wrap; gap: 16px; padding: 14px 16px; align-items: flex-start; }
 .row > .dot { margin-top: 7px; }
+/* The tick in front of each row. Someone else's PR keeps the empty slot, so every title lines up. */
+.pick { width: 16px; height: 16px; margin: 3px -6px 0 0; flex: none; accent-color: var(--primary); cursor: pointer; }
+.pick:disabled { opacity: .35; cursor: not-allowed; }
 .pr-main { flex: 1 1 420px; min-width: 0; display: flex; flex-direction: column; gap: 6px; }
 .pr-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; }
 .pr-title { font-size: 15px; font-weight: 600; color: var(--text); text-decoration: none; text-wrap: pretty; overflow-wrap: anywhere; }
@@ -197,7 +203,7 @@ button.state:hover { color: #fff; }
 .pr-acts { position: relative; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: flex-end; }
 
 /* the runs strip under a row */
-.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 0 16px 12px 40px; color: var(--sub); }
+.strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 0 16px 12px 66px; color: var(--sub); }
 .strip .btn { height: 24px; }
 .strip-toggle { padding: 0 6px 0 2px; color: var(--sub); }
 .strip-toggle b { font-weight: 600; }
@@ -219,7 +225,7 @@ button.state:hover { color: #fff; }
 .menu .danger { color: var(--bad-ink); }
 
 /* run cards: a PR's own runs unfolded under its row, and the triage run inside its card */
-.strip-runs { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px 40px; }
+.strip-runs { display: flex; flex-direction: column; gap: 8px; padding: 0 16px 14px 66px; }
 .hero-run { margin-top: 4px; }
 .run { background: var(--raise); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; transition: box-shadow .3s; }
 .run.flash { box-shadow: 0 0 0 2px var(--primary); }
@@ -280,7 +286,7 @@ button.state:hover { color: #fff; }
   .top { position: static; }
   /* The dot stays beside the title; the buttons take their own line under it. */
   .pr-main { flex-basis: 0; }
-  .pr-acts { flex-basis: 100%; justify-content: flex-start; padding-left: 24px; }
+  .pr-acts { flex-basis: 100%; justify-content: flex-start; padding-left: 50px; }
   .chip .t { max-width: 70vw; }
   .strip-runs { padding-left: 16px; }
   .filters { flex-wrap: wrap; }
@@ -301,6 +307,7 @@ button.state:hover { color: #fff; }
     <button class="btn btn-primary" data-act="triage"><span data-icon="sparkle"></span>Triage with Claude</button>
   </div>
   <div class="wrap filters" id="filters"></div>
+  <div class="wrap" id="picked"></div>
 </header>
 <div id="notice"></div>
 <main class="wrap board" id="board"></main>
@@ -419,6 +426,8 @@ const S = {
   // The PRs whose runs show as cards under the row instead of the newest one on a line.
   runsOpen: {},
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
+  // The PRs you ticked, by key, for the bar on top to merge, or merge and release.
+  picked: new Set(),
   // Motion bookkeeping: what has already been on screen, so a re-render never replays an entrance.
   seen: new Set(), heroKey: null,
 }
@@ -542,6 +551,14 @@ const releasable = repo => ['tag', 'workflow'].includes(S.plans[repo]?.method)
 // Your idle Ready PRs that Merge & release can take: in `repo`, or in every repo that releases.
 const shippable = repo => lanePrs('ready').filter(pr => (!repo || pr.repo === repo) && idle(pr) && can('ship', pr, true))
 const mergeable = repo => lanePrs('ready').filter(pr => pr.repo === repo && idle(pr) && can('merge', pr, true))
+// Your idle PRs a tick can take: a Ready one merges the normal way, and one held back only by its approval or by
+// being behind takes an admin merge.
+const pickable = pr => !LANE[pr.lane].theirs && idle(pr) && (pr.lane === 'ready' && can('merge', pr, true) || can('admin', pr, true))
+// The ticked PRs that are still pickable, split the way the Merge & release dialog takes them.
+function picks() {
+  const prs = [...S.picked].map(findPr).filter(pr => pr && pickable(pr))
+  return { prs, keys: prs.filter(pr => pr.lane === 'ready').map(keyOf), admin: prs.filter(pr => pr.lane !== 'ready').map(keyOf) }
+}
 // Why GitHub would not merge a PR yet, in a few words: what keeps it out of Merge & release.
 function blockers(pr) {
   const out = []
@@ -724,9 +741,13 @@ function row(pr, lane, byRepo = false) {
     mine ? `<span class="branch" title="${esc(pr.head)}">${esc(pr.head)}</span>` : '',
   ].filter(Boolean).join(' · ')
   const author = mine ? '' : `<span class="author" title="Opened by @${esc(pr.author)}"><img src="https://github.com/${esc(encodeURIComponent(pr.author))}.png?size=40" alt="" loading="lazy" onerror="this.remove()">@${esc(pr.author)}</span>`
+  // Your PRs that cannot merge yet keep a greyed-out tick that says why.
+  const why = done || (!idle(pr) ? 'Something is running on it' : `Not ready to merge: ${blockers(pr)}`)
+  const pick = !mine ? '<span class="pick" aria-hidden="true"></span>'
+    : `<input type="checkbox" class="pick" data-act="pick" aria-label="Select ${esc(short(pr))}"${S.picked.has(k) ? ' checked' : ''}${pickable(pr) ? '' : ` disabled title="${esc(why)}"`}>`
   return `<article class="pr${done ? ' done' : ''}${mine ? '' : ' theirs'}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
     <div class="row">
-      <span class="dot" style="--dot:${lane.dot}" title="${esc(`${lane.label}. ${lane.hint}`)}"></span>
+      ${pick}<span class="dot" style="--dot:${lane.dot}" title="${esc(`${lane.label}. ${lane.hint}`)}"></span>
       <div class="pr-main">
         <div class="pr-head">${link(pr.url, esc(pr.title), 'pr-title')}<span class="pr-num">${byRepo ? '' : link(`https://github.com/${pr.repo}`, esc(pr.name))}#${pr.number}</span>${author}</div>
         <div class="pr-meta">${tags(pr, lane, byRepo)}<span class="dim">${info}</span></div>
@@ -773,12 +794,33 @@ function strip(pr) {
 // Run cards live on the board, so a redraw keeps the reply you are typing and where each log was scrolled.
 function renderBoard() {
   const board = $('#board')
+  renderPicked()
   keepFocus(() => {
     const scroll = saveScroll(board)
     board.innerHTML = hero() + boardBody()
     animateNew(board)
     restoreScroll(board, scroll)
   })
+}
+
+// The bar under the filters while anything is ticked. A tick whose PR merged, moved lanes or got busy goes with it.
+function renderPicked() {
+  const { prs, admin } = picks()
+  S.picked = new Set(prs.map(keyOf))
+  const el = $('#picked')
+  if (!prs.length) { el.innerHTML = ''; return }
+  const appear = !el.firstChild
+  const n = prs.length
+  const repos = [...new Set(prs.map(pr => pr.repo))]
+  const releases = repos.filter(releasable)
+  const detail = [repos.length > 1 ? `in ${plural(repos.length, 'repo')}` : `in ${esc(repoName(repos[0]))}`, admin.length ? `${admin.length} by admin merge` : ''].filter(Boolean).join(' · ')
+  const tip = releases.length ? `Squash-merge, then release ${releases.map(repoName).join(', ')}` : 'None of these repos releases, so they can only merge'
+  el.innerHTML = `<div class="pick-bar${appear ? ' anim' : ''}" role="region" aria-label="Selected pull requests">
+    <span><b>${plural(n, 'PR')} selected</b> <span class="sub">${detail}</span></span><div class="grow"></div>
+    <button class="btn btn-sm btn-ghost" data-act="pick-clear" title="Untick all (Esc)">Clear</button>
+    <button class="btn btn-sm" data-act="pick-go" data-release="false" title="Squash-merge, no release">Merge ${n}</button>
+    <button class="btn btn-sm btn-primary" data-act="pick-go" data-release="true" title="${esc(tip)}"${releases.length ? '' : ' disabled'}>${icon('rocket', 14)}Merge &amp; release ${n}</button>
+  </div>`
 }
 
 function boardBody() {
@@ -972,30 +1014,31 @@ function drawDialog() {
     $('#dialog').innerHTML = frame(c.title(pr), c.body(pr), `${cancel}<button class="btn btn-primary" data-act="dialog-go">${c.go}</button>`)
   } else if (d.type === 'ship') {
     // Keys were fixed when the dialog opened; `d.admin` holds the PRs you ticked for an admin merge, and
-    // `d.repo` with nothing to merge is a plain release.
+    // `d.repo` with nothing to merge is a plain release. `d.release` false merges and releases nothing.
     const { prs, forced, repos } = shipSet(d)
     const merges = prs.length + forced.length
-    const checking = repos.some(r => !S.plans[r] && !S.planErrors[r])
-    const releasing = repos.filter(releasable)
+    const checking = d.release && repos.some(r => !S.plans[r] && !S.planErrors[r])
+    const releasing = d.release ? repos.filter(releasable) : []
     const groups = repos.map(repo => {
       const merging = prs.filter(pr => pr.repo === repo)
       const p = S.plans[repo]
-      const head = p?.method === 'tag' ? `<span class="ver">${esc(p.latest)} → ${esc(p.next || '?')}</span>` : p?.latest ? `<span class="ver">latest ${esc(p.latest)}</span>` : ''
+      const head = !d.release ? '' : p?.method === 'tag' ? `<span class="ver">${esc(p.latest)} → ${esc(p.next || '?')}</span>` : p?.latest ? `<span class="ver">latest ${esc(p.latest)}</span>` : ''
       const admin = adminCandidates(repo, d).map(pr => `<label class="check"><input type="checkbox" data-act="ship-admin" data-key="${esc(keyOf(pr))}"${d.admin.includes(keyOf(pr)) ? ' checked' : ''}>
           <span>Admin-merge #${pr.number} ${esc(pr.title)} <span>(${esc(blockers(pr))})</span></span></label>`).join('')
+      const note = d.release ? `<p>${shipNote(repo, merges > 0 && (merging.length > 0 || forced.some(pr => pr.repo === repo)))}</p>${outNote(repo, merging, d)}` : ''
       return `<div class="ship-repo"><div class="head">${esc(repoName(repo))}${head}</div>
-        ${merging.length ? `<ul>${merging.map(pr => `<li>#${pr.number} <span>${esc(pr.title)}</span></li>`).join('')}</ul>` : ''}${admin}
-        <p>${shipNote(repo, merges > 0 && (merging.length > 0 || forced.some(pr => pr.repo === repo)))}</p>${outNote(repo, merging, d)}</div>`
+        ${merging.length ? `<ul>${merging.map(pr => `<li>#${pr.number} <span>${esc(pr.title)}</span></li>`).join('')}</ul>` : ''}${admin}${note}</div>`
     }).join('')
     const word = forced.length ? 'Admin-merge' : 'Merge'
     const andRelease = releasing.length ? ' and release' : ''
-    const title = !merges ? `Release ${repoName(d.repo)}${S.plans[d.repo]?.next ? ' ' + S.plans[d.repo].next : ''}?`
+    // A plain release names its repo; ticks you cleared in the dialog leave nothing to do.
+    const title = !merges ? (d.repo ? `Release ${repoName(d.repo)}${S.plans[d.repo]?.next ? ' ' + S.plans[d.repo].next : ''}?` : 'Nothing ticked to merge')
       : merges === 1 ? `${word}${andRelease} ${short(prs[0] || forced[0])}?` : `${word} ${merges}${releasing.length ? ` and release ${plural(releasing.length, 'repo')}` : ''}?`
-    const how = merges ? '<p style="margin:0">Squash-merges each PR, pinned to the commit shown here. A repo releases after its merges, and only when at least one of them went through.</p>' : ''
+    const how = !merges ? '' : `<p style="margin:0">Squash-merges each PR, pinned to the commit shown here. ${d.release ? 'A repo releases after its merges, and only when at least one of them went through.' : 'Nothing is released.'}</p>`
     const warn = forced.length ? `<p class="admin-warn"><b>Admin merge skips branch protection</b> for ${forced.map(pr => '#' + pr.number).join(', ')}. Nobody has approved ${forced.length === 1 ? 'it' : 'them'} yet, and a PR behind its base merges without CI having run on today's base. GitHub still refuses in a repo that enforces its rules for admins.</p>` : ''
-    const go = checking ? 'Checking releases…' : `${forced.length ? 'Admin merge' : merges ? 'Merge' : 'Release'}${merges && releasing.length ? ' &amp; release' : ''}`
+    const go = checking ? 'Checking releases…' : `${forced.length ? 'Admin merge' : merges || !d.repo ? 'Merge' : 'Release'}${merges && releasing.length ? ' &amp; release' : ''}`
     $('#dialog').innerHTML = frame(title, `<div class="ship-list">${groups}</div>${how}${warn}`,
-      `${cancel}<button class="btn ${forced.length ? 'btn-admin' : 'btn-primary'}" data-act="ship-go" ${checking || (!merges && !releasing.length) ? 'disabled' : ''}>${go}</button>`)
+      `${cancel}<button class="btn ${forced.length ? 'btn-admin' : 'btn-primary'}" data-act="ship-go" ${checking || (!merges && !(d.repo && releasing.length)) ? 'disabled' : ''}>${go}</button>`)
   } else if (d.type === 'bulk') {
     const lane = LANE[d.lane]
     const { verb, label } = lane.bulk
@@ -1031,14 +1074,18 @@ function outNote(repo, merging, d) {
 }
 
 // Your idle PRs in `repo` the dialog offers for an admin merge: the ones the server marked as held back
-// only by their approval or by being behind, and not already merging the normal way.
-const adminCandidates = (repo, d) => S.data.mine.filter(pr => pr.repo === repo && pr.adminMergeable && idle(pr) && !d.keys.includes(keyOf(pr)))
+// only by their approval or by being behind, and not already merging the normal way. `d.offer`, when set,
+// narrows them to the PRs you ticked on the board.
+const adminCandidates = (repo, d) => S.data.mine.filter(pr => pr.repo === repo && pr.adminMergeable && idle(pr) && !d.keys.includes(keyOf(pr))
+  && (!d.offer || d.offer.includes(keyOf(pr))))
 
 // What a Merge & release dialog takes: PRs merging normally, PRs ticked for an admin merge, and their repos.
+// An offered PR keeps its repo on the list after you untick it, so you can tick it again.
 function shipSet(d) {
   const prs = d.keys.map(findPr).filter(Boolean)
   const forced = d.admin.map(findPr).filter(pr => pr?.adminMergeable)
-  const repos = [...new Set([d.repo, ...prs.map(pr => pr.repo), ...forced.map(pr => pr.repo)].filter(Boolean))]
+  const offered = (d.offer || []).map(findPr).filter(Boolean)
+  const repos = [...new Set([d.repo, ...offered.map(pr => pr.repo), ...prs.map(pr => pr.repo), ...forced.map(pr => pr.repo)].filter(Boolean))]
   return { prs, forced, repos }
 }
 
@@ -1275,18 +1322,21 @@ async function releaseRepo(repo) {
 async function ship(d) {
   const { prs, forced, repos } = shipSet(d)
   closeDialog()
-  for (const pr of [...prs, ...forced]) S.busy[keyOf(pr)] = 'Waiting'
+  for (const pr of [...prs, ...forced]) {
+    S.busy[keyOf(pr)] = 'Waiting'
+    S.picked.delete(keyOf(pr))
+  }
   for (const repo of repos) {
     const normal = prs.filter(pr => pr.repo === repo)
     const admin = forced.filter(pr => pr.repo === repo)
     const merged = [...(normal.length ? await ghEach('merge', normal) : []), ...(admin.length ? await ghEach('admin', admin) : [])]
     if (normal.length + admin.length && !merged.length) continue
-    if (releasable(repo)) await releaseRepo(repo)
+    if (d.release && releasable(repo)) await releaseRepo(repo)
   }
 }
 
-function openShip(keys, repo = null, admin = []) {
-  openDialog({ type: 'ship', keys, repo, admin })
+function openShip(keys, { repo = null, admin = [], offer = null, release = true } = {}) {
+  openDialog({ type: 'ship', keys, repo, admin, offer, release })
   loadPlans()
 }
 
@@ -1384,7 +1434,7 @@ const ACTIONS = {
   // Every row button and menu item that acts on a PR: confirm first when the verb asks for it.
   verb: ({ el, pr, k }) => {
     const v = el.dataset.verb
-    if (v === 'admin') return openShip([], pr.repo, [k])
+    if (v === 'admin') return openShip([], { repo: pr.repo, admin: [k] })
     return VERBS[v].ship ? openShip([k]) : VERBS[v].confirm ? openDialog({ type: 'confirm', verb: v, k }) : perform(v, pr)
   },
   'dialog-go': ({ pr }) => { const v = S.dialog.verb; closeDialog(); return perform(v, pr) },
@@ -1392,7 +1442,14 @@ const ACTIONS = {
   'bulk-go': () => runBulk(),
   'merge-repo': ({ el }) => openDialog({ type: 'bulk', lane: 'ready', keys: mergeable(el.dataset.repo).map(keyOf) }),
   'ship-open': ({ el }) => openShip(shippable(el.dataset.repo).map(keyOf)),
-  'release-open': ({ el }) => openShip([], el.dataset.repo),
+  'release-open': ({ el }) => openShip([], { repo: el.dataset.repo }),
+  pick: ({ el, k }) => { if (el.checked) S.picked.add(k); else S.picked.delete(k); renderBoard() },
+  'pick-clear': () => { S.picked.clear(); renderBoard() },
+  // The bar's two buttons open the same dialog, so you read the list before anything merges.
+  'pick-go': ({ el }) => {
+    const { keys, admin } = picks()
+    openShip(keys, { admin, offer: admin, release: el.dataset.release === 'true' })
+  },
   'ship-go': () => ship(S.dialog),
   'ship-admin': ({ el }) => {
     const k = el.dataset.key
@@ -1452,6 +1509,7 @@ document.addEventListener('keydown', ev => {
   if (ev.key === 'Escape') {
     if (S.dialog) return closeDialog()
     if (S.menu) { S.menu = null; return renderBoard() }
+    if (S.picked.size) { S.picked.clear(); return renderBoard() }
   }
   if (t.matches('input, textarea') || S.dialog || ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (ev.key === 'r') loadPrs()
