@@ -114,6 +114,7 @@ pub struct Pr {
     pub review: Option<ReviewDecision>,
     /// People and teams asked to review who have not yet.
     pub reviewers: Vec<String>,
+    pub labels: Vec<String>,
     pub open_threads: u64,
     pub head: String,
     pub head_sha: String,
@@ -218,6 +219,7 @@ const FIELDS: &str = r#"
   repository { nameWithOwner name isArchived viewerPermission }
   reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
   reviewThreads(first: 100) { nodes { isResolved } }
+  labels(first: 20) { nodes { name } }
   viewerLatestReview { state }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 100) { nodes {
     __typename
@@ -333,6 +335,7 @@ fn to_pr(n: &Value) -> Pr {
             .iter()
             .filter_map(|r| r.pointer("/requestedReviewer/login").or(r.pointer("/requestedReviewer/name")).and_then(Value::as_str).map(String::from))
             .collect(),
+        labels: nodes("/labels/nodes").iter().filter_map(|l| l["name"].as_str().map(String::from)).collect(),
         open_threads: nodes("/reviewThreads/nodes").iter().filter(|t| t["isResolved"] == false).count() as u64,
         head: text(n, "/headRefName"),
         head_sha: text(n, "/headRefOid"),

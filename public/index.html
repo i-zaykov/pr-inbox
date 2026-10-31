@@ -321,6 +321,46 @@ body.has-detail { padding-right: var(--detail-w); }
 .entry > .md, .entry > .fold > .md { padding: 4px 14px 12px; }
 .entry > .fold > summary { padding: 0 12px 10px; }
 .detail .skeleton { margin: 0; height: 18px; }
+/* Open PRs as tabs along the panel's top, and the Summary / Code switch. */
+.ptabs { display: flex; gap: 4px; overflow-x: auto; margin: -4px -8px 0; padding: 0 8px 2px; scrollbar-width: none; }
+.ptab { flex: none; display: inline-flex; align-items: center; gap: 4px; max-width: 220px; height: 28px; padding: 0 4px 0 10px; border-radius: 8px; border: 1px solid transparent; background: none; color: var(--dim); font-size: 12px; }
+.ptab:hover { background: var(--hover); color: var(--text); }
+.ptab[aria-current="true"] { background: var(--raise); border-color: var(--line-strong); color: var(--text); }
+.ptab .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ptab .x { display: inline-flex; padding: 2px; border-radius: 4px; color: var(--dim); }
+.ptab .x:hover { background: var(--hover); color: #fff; }
+.views-sw { display: flex; gap: 4px; }
+.anchor-wrap { position: relative; display: inline-flex; }
+.facts .picker { display: flex; gap: 6px; width: 100%; max-width: 360px; }
+.facts .picker .input { min-height: 28px; padding: 3px 10px; font-size: 12.5px; }
+.compose { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.compose textarea { min-height: 84px; }
+.compose .row-end { display: flex; justify-content: flex-end; gap: 8px; align-items: center; }
+/* The Code tab: GitHub's unified diff, one fold per file. */
+.files-sum { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; color: var(--sub); }
+.files-index { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; font-family: var(--mono); font-size: 12px; }
+.files-index a { display: flex; gap: 10px; color: var(--sub); text-decoration: none; padding: 2px 4px; border-radius: 4px; }
+.files-index a:hover { background: var(--hover); color: #fff; }
+.files-index .nm { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; direction: rtl; text-align: left; }
+.add-n { color: var(--ok-ink); } .del-n { color: var(--bad-ink); }
+.file { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); scroll-margin-top: 230px; }
+.file > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-family: var(--mono); font-size: 12px; position: sticky; top: 0; }
+.file > summary::-webkit-details-marker { display: none; }
+.file > summary svg { flex: none; transition: transform .2s; transform: rotate(-90deg); color: var(--dim); }
+.file[open] > summary { border-bottom: 1px solid var(--line); }
+.file[open] > summary svg { transform: none; }
+.file > summary .nm { flex: 1; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+.diff { overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.55; padding: 4px 0; }
+.dl { display: grid; grid-template-columns: 44px 44px 1fr; min-width: max-content; }
+.dl .ln { padding: 0 8px; text-align: right; color: var(--stale); user-select: none; }
+.dl code { white-space: pre; padding: 0 12px 0 6px; font-size: 12px; }
+.dl.add { background: oklch(0.78 0.15 148 / .12); } .dl.add code::before { content: "+"; color: var(--ok-ink); margin-right: 4px; }
+.dl.del { background: oklch(0.72 0.17 25 / .13); } .dl.del code::before { content: "−"; color: var(--bad-ink); margin-right: 4px; }
+.dl.ctx code::before { content: " "; margin-right: 4px; }
+.dl.hunk { background: oklch(0.75 0.11 260 / .10); color: var(--info-ink); }
+.dl.note code { color: var(--dim); font-style: italic; }
+.no-patch { padding: 10px 14px; color: var(--dim); }
+.search { width: 260px; min-height: 32px; padding: 5px 12px; }
 /* GitHub's rendered markdown, in this page's colors. */
 .md { font-size: 14px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
 .md > :first-child { margin-top: 0; }
@@ -354,6 +394,7 @@ body.has-detail { padding-right: var(--detail-w); }
   .strip-runs { padding-left: 16px; }
   .filters { flex-wrap: wrap; }
   .views { flex: 1 1 100%; flex-wrap: wrap; gap: 8px 16px; }
+  .search { width: 100%; order: 10; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
 </style>
@@ -365,6 +406,7 @@ body.has-detail { padding-right: var(--detail-w); }
     <h1>PR inbox</h1>
     <span class="sub" id="who"></span>
     <div class="grow"></div>
+    <input class="input search" id="search" type="search" placeholder="Search  /  repo: author: label: #123" aria-label="Search pull requests" autocomplete="off" spellcheck="false">
     <span class="dim updated" id="updated"></span>
     <button class="btn" id="refresh-btn" data-act="refresh" title="Refresh the PRs (⌘R reloads the app)"><span data-icon="refresh"></span>Refresh</button>
     <button class="btn btn-primary" data-act="triage"><span data-icon="sparkle"></span>Triage with Claude</button>
@@ -493,6 +535,10 @@ const S = {
   runsOpen: {},
   // The PR open in the side panel, by key, and each PR's full detail as fetched, by URL.
   detail: null, details: {},
+  // The PRs open as tabs in the panel, in order; which view the panel shows; each PR's changed files, by URL.
+  tabs: [], view: 'summary', files: {},
+  // The search box, the people each repo can ask to review, whether the picker is open, and comment drafts by URL.
+  query: '', people: {}, picking: false, comments: {}, posting: false,
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
   // The PRs you ticked, by key, for the bar on top to merge, or merge and release.
   picked: new Set(),
@@ -585,7 +631,22 @@ function allPrs() {
 const handled = pr => pr.lane === 'reviewed' && ['APPROVED', 'CHANGES_REQUESTED'].includes(pr.yourReview)
 // The PRs the board lists: all of them, or with "Show: Needs me" all but the handled ones. Runs and lookups
 // still see every PR.
-const boardPrs = () => S.show === 'needs' ? allPrs().filter(pr => !handled(pr)) : allPrs()
+const boardPrs = () => allPrs().filter(pr => (S.show !== 'needs' || !handled(pr)) && matches(pr, S.query))
+
+// The search box: every word must match. repo:, author: (or @name) and label: look at that field only, #123 or a
+// bare number at the PR number, and any other word anywhere in the title, repo, branch, author or labels.
+function matches(pr, query) {
+  const has = (field, word) => String(field).toLowerCase().includes(word)
+  return query.toLowerCase().split(/\s+/).filter(Boolean).every(w => {
+    const [, key, val] = w.match(/^(repo|author|label):(.*)$/) || []
+    if (key === 'repo') return has(pr.repo, val)
+    if (key === 'author') return has(pr.author, val)
+    if (key === 'label') return pr.labels.some(l => has(l, val))
+    if (w.startsWith('@')) return has(pr.author, w.slice(1))
+    if (/^#?\d+$/.test(w)) return String(pr.number).startsWith(w.replace('#', ''))
+    return [pr.title, pr.repo, pr.head, pr.author, ...pr.labels].some(f => has(f, w))
+  })
+}
 
 const findPr = k => allPrs().find(pr => keyOf(pr) === k)
 const runFor = pr => S.runs.find(r => r.prUrl === pr.url && active(r))
@@ -751,6 +812,7 @@ function tags(pr, lane, byRepo) {
   if (pr.review === 'APPROVED') tag('Approved', 'tag-ok')
   if (pr.isDraft) tag('Draft', 'tag-mute')
   if (pr.isCrossRepo) tag('From a fork', 'tag-mute', 'Claude runs that change code are off for fork PRs')
+  for (const l of pr.labels || []) tag(esc(l), 'tag-info', 'Label')
   // A thermo-nuclear review shows once one is recorded; the runs strip says when one failed to run.
   if (!lane.theirs) {
     const { state, tip } = review(pr)
@@ -923,7 +985,7 @@ const mixed = root => root.querySelectorAll('[data-mixed]').forEach(el => { el.i
 function boardBody() {
   if (!S.data) return S.error ? '' : '<div class="panel"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>'
   const buckets = S.group === 'repo' ? repoBuckets() : laneBuckets()
-  return buckets || `<div class="panel empty">${S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
+  return buckets || `<div class="panel empty">${S.query.trim() ? `No pull request matches “${esc(S.query.trim())}”.` : S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
 }
 
 // The tick in a group's heading: it ticks every PR of the group a tick can take, and unticks them once all are.
@@ -1013,7 +1075,10 @@ function releaseInfo(repo) {
 function renderDetail() {
   const el = $('#detail')
   const pr = S.detail ? findPr(S.detail) : null
-  if (S.detail && !pr && S.data) S.detail = null
+  // A PR that left the inbox takes its tab with it.
+  if (S.data) S.tabs = S.tabs.filter(findPr)
+  if (S.detail && !pr && S.data) S.detail = S.tabs.at(-1) || null
+  if (S.detail && !pr) return renderDetail()
   document.body.classList.toggle('has-detail', !!pr)
   if (!pr) { el.hidden = true; el.innerHTML = ''; delete el.dataset.key; return }
   // The panel slides in when it opens; moving to another PR swaps its contents in place.
@@ -1025,12 +1090,12 @@ function renderDetail() {
     el.scrollTop = 0
   }
   keepFocus(() => { $('#detail-head').innerHTML = detailHead(pr) })
-  const d = S.details[pr.url]
-  const sig = JSON.stringify([pr.url, d?.at, d?.error, !!d?.data])
+  const d = S.view === 'code' ? S.files[pr.url] : S.details[pr.url]
+  const sig = JSON.stringify([S.view, pr.url, d?.at, d?.error, !!d?.data, S.picking, S.posting, S.people[pr.repo]?.length])
   const body = $('#detail-body')
   if (body.dataset.sig !== sig) {
     body.dataset.sig = sig
-    body.innerHTML = detailBody(pr, d)
+    keepFocus(() => { body.innerHTML = S.view === 'code' ? codeBody(pr, d) : detailBody(pr, d) })
   }
 }
 
@@ -1039,11 +1104,21 @@ function detailHead(pr) {
   const k = keyOf(pr)
   const avatar = `<img src="https://github.com/${esc(encodeURIComponent(pr.author))}.png?size=40" alt="" loading="lazy" onerror="this.remove()">`
   const fails = pr.failing.slice(0, 6).map(c => httpsOnly(c.url) ? `<a href="${esc(c.url)}" target="_blank" rel="noreferrer">✕ ${esc(c.name)}</a>` : `<span>✕ ${esc(c.name)}</span>`).join('')
-  return `<div class="detail-bar">
+  const tabs = S.tabs.length > 1 ? `<div class="ptabs" role="tablist">${S.tabs.map(t => {
+    const p = findPr(t)
+    return `<button class="ptab" role="tab" data-act="tab" data-key="${esc(t)}" aria-current="${t === k}" title="${esc(`${short(p)} ${p.title}`)}"><span class="t">#${p.number} ${esc(p.title)}</span><span class="x" data-act="tab-close" data-key="${esc(t)}" aria-label="Close tab">${icon('x', 12)}</span></button>`
+  }).join('')}</div>` : ''
+  const checkout = `gh pr checkout ${pr.number}`
+  const coMenu = S.menu !== 'checkout:' + k ? '' : `<div class="menu" role="menu">
+      <button data-act="checkout">Open in Terminal, in ~/…/${esc(pr.name)}</button>
+      <button data-act="copy" data-text="${esc(checkout)}">Copy <code>${esc(checkout)}</code></button>
+    </div>`
+  const nFiles = S.files[pr.url]?.data?.length ?? pr.files
+  return `${tabs}<div class="detail-bar">
       <span class="dot" style="--dot:${lane.dot}" title="${esc(lane.hint)}"></span><span class="sub">${esc(lane.label)}</span>
       <span class="pr-num"><a href="https://github.com/${esc(pr.repo)}" target="_blank" rel="noreferrer">${esc(pr.repo)}</a> <a href="${esc(pr.url)}" target="_blank" rel="noreferrer">#${pr.number}</a></span>
       <div class="grow"></div>
-      <a class="btn btn-sm btn-ghost" href="${esc(pr.url)}/files" target="_blank" rel="noreferrer">Files</a>
+      <span class="anchor-wrap"><button class="btn btn-sm btn-ghost" data-act="menu" data-menu="checkout:${esc(k)}" aria-expanded="${S.menu === 'checkout:' + k}" title="${esc(checkout)}">Check out${icon('chevron', 14)}</button>${coMenu}</span>
       <a class="btn btn-sm btn-ghost" href="${esc(pr.url)}" target="_blank" rel="noreferrer">${icon('external', 14)}GitHub</a>
       <button class="btn btn-ghost btn-icon" data-act="detail-close" title="Close (Esc)" aria-label="Close">${icon('x')}</button>
     </div>
@@ -1053,7 +1128,9 @@ function detailHead(pr) {
       <span>${plural(pr.files, 'file')} <span style="color:var(--ok-ink)">+${pr.additions.toLocaleString()}</span> <span style="color:var(--bad-ink)">−${pr.deletions.toLocaleString()}</span></span></div>
     <div class="pr-meta">${tags(pr, lane, true)}${pr.openThreads ? `<span class="threads">${plural(pr.openThreads, 'open thread')}</span>` : ''}</div>
     ${fails ? `<div class="fails">${fails}</div>` : ''}
-    <div class="detail-acts">${actsHtml(pr, lane, 'detail:' + k)}</div>`
+    <div class="detail-acts">${actsHtml(pr, lane, 'detail:' + k)}</div>
+    <div class="views-sw" role="tablist">${[['summary', 'Summary'], ['code', `Code · ${plural(nFiles, 'file')}`]].map(([v, label]) =>
+      `<button class="btn btn-sm${S.view === v ? '' : ' btn-ghost'}" role="tab" data-act="view" data-view="${v}" aria-selected="${S.view === v}">${label}</button>`).join('')}</div>`
 }
 
 function detailBody(pr, d) {
@@ -1061,14 +1138,58 @@ function detailBody(pr, d) {
   if (!d?.data) return '<div class="skeleton"></div><div class="skeleton" style="width:80%"></div><div class="skeleton" style="width:60%"></div>'
   const { bodyHtml, labels, timeline, checks } = d.data
   const reviewers = pr.reviewers.length ? pr.reviewers.map(r => `<span class="tag tag-mute">@${esc(r)}</span>`).join('') : '<span class="dim">None waiting</span>'
+  const people = S.people[pr.repo] || []
+  const picker = !S.picking ? `<button class="btn btn-sm btn-ghost" data-act="pick-reviewer" title="Ask someone to review">+ Add</button>`
+    : `<div class="picker"><input class="input" id="reviewer-input" list="people-list" placeholder="${people.length ? 'GitHub user name' : 'Loading people…'}" autocomplete="off">
+       <datalist id="people-list">${people.filter(p => p !== S.data.login && p !== pr.author).map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+       <button class="btn btn-sm btn-primary" data-act="add-reviewer">Ask</button><button class="btn btn-sm btn-ghost" data-act="pick-reviewer">Cancel</button></div>`
   const facts = `<dl class="facts">
-      <dt>Waiting on</dt><dd>${reviewers}</dd>
+      <dt>Waiting on</dt><dd>${reviewers}${picker}</dd>
       <dt>Labels</dt><dd>${labels.length ? labels.map(l => `<span class="tag tag-info">${esc(l)}</span>`).join('') : '<span class="dim">None</span>'}</dd>
       <dt>Checks</dt><dd>${checksHtml(checks)}</dd>
     </dl>`
   const desc = bodyHtml.trim() ? `<div class="md">${githubHtml(bodyHtml)}</div>` : '<p class="dim">No description.</p>'
-  const activity = timeline.length ? `<section><div class="sec-title">Activity · ${timeline.length}</div><div class="entries">${timeline.map(entryHtml).join('')}</div></section>` : ''
+  const compose = `<div class="compose"><textarea class="input" id="comment-input" data-act="comment-draft" placeholder="Comment on ${esc(short(pr))} as @${esc(S.data.login)} (⌘↵ posts)">${esc(S.comments[pr.url] || '')}</textarea>
+      <div class="row-end"><button class="btn btn-sm btn-primary" data-act="comment-send"${S.posting ? ' disabled' : ''}>${S.posting ? '<span class="spin"></span>Posting' : 'Comment'}</button></div></div>`
+  const activity = `<section><div class="sec-title">Activity${timeline.length ? ` · ${timeline.length}` : ''}</div><div class="entries">${timeline.map(entryHtml).join('')}</div>${compose}</section>`
   return `${facts}<section><div class="sec-title">Description</div>${desc}</section>${activity}`
+}
+
+// The Code tab: a file index, then each file's diff. Small files start open until about 1500 lines are showing.
+function codeBody(pr, f) {
+  if (f?.error && !f.data) return `<div class="notice-box">${icon('alert')}<div class="notice-text">Could not load the changes: ${esc(f.error)}</div><button class="btn btn-sm" data-act="detail-reload">Try again</button></div>`
+  if (!f?.data) return '<div class="skeleton"></div><div class="skeleton" style="width:80%"></div><div class="skeleton" style="width:60%"></div>'
+  const files = f.data
+  const sum = (key) => files.reduce((n, x) => n + x[key], 0)
+  let budget = 1500
+  const STATUS = { added: 'tag-ok', removed: 'tag-bad', renamed: 'tag-info' }
+  const index = files.map((x, i) => `<a href="#file-${i}" data-act="jump" data-i="${i}"><span class="nm" title="${esc(x.name)}">&lrm;${esc(x.name)}&lrm;</span><span class="add-n">+${x.additions}</span><span class="del-n">−${x.deletions}</span></a>`).join('')
+  const blocks = files.map((x, i) => {
+    const lines = x.patch ? x.patch.split('\n').length : 0
+    const open = lines && lines <= 400 && (budget -= lines) >= 0
+    const tag = STATUS[x.status] ? `<span class="tag ${STATUS[x.status]}">${esc(x.status)}</span>` : ''
+    const name = x.previous && x.previous !== x.name ? `${esc(x.previous)} → ${esc(x.name)}` : esc(x.name)
+    return `<details class="file" id="file-${i}"${open ? ' open' : ''}><summary>${icon('chevron', 14)}<span class="nm">${name}</span>${tag}<span class="add-n">+${x.additions}</span><span class="del-n">−${x.deletions}</span></summary>
+      ${x.patch ? `<div class="diff">${diffHtml(x.patch)}</div>` : '<div class="no-patch">No diff to show: a binary file, or too large for GitHub to render.</div>'}</details>`
+  }).join('')
+  return `<div><div class="files-sum"><b>${plural(files.length, 'file')}</b><span class="add-n">+${sum('additions').toLocaleString()}</span><span class="del-n">−${sum('deletions').toLocaleString()}</span>
+      <a href="${esc(pr.url)}/files" target="_blank" rel="noreferrer">Review on GitHub</a></div>
+      <details class="fold"${files.length > 1 ? ' open' : ''}><summary>${icon('chevron', 14)}Files</summary><div class="files-index">${index}</div></details></div>
+    <div class="entries">${blocks}</div>`
+}
+
+// A unified diff as rows with old and new line numbers.
+function diffHtml(patch) {
+  let a = 0, b = 0
+  return patch.split('\n').map(line => {
+    const h = line.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@/)
+    if (h) { a = +h[1]; b = +h[2]; return `<div class="dl hunk"><span class="ln"></span><span class="ln"></span><code>${esc(line)}</code></div>` }
+    const c = line[0], text = esc(line.slice(1))
+    if (c === '+') return `<div class="dl add"><span class="ln"></span><span class="ln">${b++}</span><code>${text}</code></div>`
+    if (c === '-') return `<div class="dl del"><span class="ln">${a++}</span><span class="ln"></span><code>${text}</code></div>`
+    if (c === '\\') return `<div class="dl note"><span class="ln"></span><span class="ln"></span><code>${text.trim()}</code></div>`
+    return `<div class="dl ctx"><span class="ln">${a++}</span><span class="ln">${b++}</span><code>${text}</code></div>`
+  }).join('')
 }
 
 // Failing checks first, then running, then the rest; the list folds open on its own only when one failed.
@@ -1115,32 +1236,56 @@ function githubHtml(html) {
   return t.innerHTML
 }
 
-// Fetches the open PR's detail, unless the copy on hand is from its current update and under a minute old.
+// Fetches what the panel's view shows for the open PR, unless the copy on hand is from the PR's current update
+// and under a minute old.
 async function loadDetail(force = false) {
   const pr = S.detail && findPr(S.detail)
   if (!pr) return
-  const have = S.details[pr.url]
+  const [store, path] = S.view === 'code' ? [S.files, 'pr-files'] : [S.details, 'pr-detail']
+  const have = store[pr.url]
   if (!force && have?.data && have.updatedAt === pr.updatedAt && Date.now() - have.at < 60000) return
   try {
-    const data = await api(`/api/pr-detail?url=${encodeURIComponent(pr.url)}`)
-    S.details[pr.url] = { data, at: Date.now(), updatedAt: pr.updatedAt }
+    const data = await api(`/api/${path}?url=${encodeURIComponent(pr.url)}`)
+    store[pr.url] = { data, at: Date.now(), updatedAt: pr.updatedAt }
   } catch (e) {
-    S.details[pr.url] = { ...have, error: e.message, at: Date.now() }
+    store[pr.url] = { ...have, error: e.message, at: Date.now() }
   }
   renderDetail()
 }
 
-function openDetail(k) {
+async function loadPeople(repo) {
+  if (S.people[repo]) return
+  try { S.people[repo] = await api(`/api/people?repo=${encodeURIComponent(repo)}`) } catch { S.people[repo] = [] }
+  renderDetail()
+}
+
+// Opening a PR adds a tab for it, at most six; `replace` swaps the current tab instead, as j and k do.
+function openDetail(k, replace = false) {
   if (S.detail === k) return
+  const at = S.tabs.indexOf(S.detail)
+  if (!S.tabs.includes(k)) {
+    if (replace && at >= 0) S.tabs[at] = k
+    else S.tabs = [...S.tabs, k].slice(-6)
+  }
   S.detail = k
   S.menu = null
+  S.picking = false
   renderBoard()
   loadDetail()
+}
+
+function closeTab(k) {
+  const i = S.tabs.indexOf(k)
+  S.tabs = S.tabs.filter(t => t !== k)
+  if (S.detail !== k) return renderDetail()
+  if (!S.tabs.length) return closeDetail()
+  openDetail(S.tabs[Math.min(i, S.tabs.length - 1)])
 }
 
 function closeDetail() {
   if (!S.detail) return
   S.detail = null
+  S.tabs = []
   $('#detail').classList.remove('anim')
   renderBoard()
 }
@@ -1151,7 +1296,7 @@ function stepDetail(by) {
   if (!keys.length) return
   const i = keys.indexOf(S.detail)
   const k = keys[i < 0 ? 0 : Math.min(keys.length - 1, Math.max(0, i + by))]
-  openDetail(k)
+  openDetail(k, true)
   document.querySelector(`#board .pr[data-key="${CSS.escape(k)}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
 }
 
@@ -1691,6 +1836,52 @@ const ACTIONS = {
     if (S.menu) $('.menu')?.classList.add('anim')
   },
   'detail-close': () => closeDetail(),
+  tab: ({ el, ev }) => ev.target.closest('[data-act="tab-close"]') ? closeTab(el.dataset.key) : openDetail(el.dataset.key),
+  'tab-close': ({ el }) => closeTab(el.dataset.key),
+  view: ({ el }) => { S.view = el.dataset.view; renderDetail(); loadDetail() },
+  jump: ({ el, ev }) => {
+    ev.preventDefault()
+    const f = document.getElementById(`file-${el.dataset.i}`)
+    if (f) { f.open = true; f.scrollIntoView({ behavior: 'smooth', block: 'start' }) }
+  },
+  checkout: async () => {
+    const pr = findPr(S.detail)
+    try { await api('/api/pr-checkout', { url: pr.url }); toast(`Checking out ${short(pr)} in Terminal`) } catch (e) { toast(e.message, true) }
+  },
+  copy: async ({ el }) => {
+    try { await navigator.clipboard.writeText(el.dataset.text); toast(`Copied ${el.dataset.text}`) } catch { toast('Could not reach the clipboard', true) }
+  },
+  'pick-reviewer': () => {
+    S.picking = !S.picking
+    renderDetail()
+    if (S.picking) { loadPeople(findPr(S.detail).repo); $('#reviewer-input')?.focus() }
+  },
+  'add-reviewer': async () => {
+    const pr = findPr(S.detail)
+    const login = ($('#reviewer-input')?.value || '').trim().replace(/^@/, '')
+    if (!login) return
+    try {
+      await api('/api/pr-reviewer', { url: pr.url, login })
+      toast(`Asked @${login} to review ${short(pr)}`)
+      S.picking = false
+      loadPrs()
+    } catch (e) { toast(e.message, true) }
+  },
+  // The draft stays until GitHub took the comment, so a refused one keeps its text.
+  'comment-send': async () => {
+    const pr = findPr(S.detail)
+    const body = (S.comments[pr.url] || '').trim()
+    if (!body || S.posting) return
+    S.posting = true
+    renderDetail()
+    try {
+      await api('/api/pr-comment', { url: pr.url, body })
+      delete S.comments[pr.url]
+      toast(`Commented on ${short(pr)}`)
+      S.posting = false
+      await loadDetail(true)
+    } catch (e) { toast(e.message, true); S.posting = false; renderDetail() }
+  },
   'detail-reload': () => loadDetail(true),
   ask: ({ k }) => openDialog({ type: 'ask', k, write: true }),
   // Every row button and menu item that acts on a PR: confirm first when the verb asks for it.
@@ -1767,12 +1958,15 @@ document.addEventListener('click', ev => {
 document.addEventListener('input', ({ target: t }) => {
   if (t.dataset.act === 'draft' && S.dialog) S.drafts[S.dialog.k] = t.value
   if (t.dataset.act === 'reply-draft') S.replyDrafts[t.dataset.run] = t.value
+  if (t.dataset.act === 'comment-draft' && S.detail) S.comments[findPr(S.detail).url] = t.value
+  if (t.id === 'search') { S.query = t.value; renderHeader(); renderBoard() }
 })
 document.addEventListener('keydown', ev => {
   const t = ev.target
   if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
     if (t.dataset.act === 'draft') { ev.preventDefault(); $('[data-act="ask-send"]')?.click() }
     if (t.dataset.act === 'reply-draft') { ev.preventDefault(); ACTIONS['reply-send']({ run: t.dataset.run }) }
+    if (t.dataset.act === 'comment-draft') { ev.preventDefault(); ACTIONS['comment-send']() }
     return
   }
   // ⌘R reloads the whole app, page and data, from anywhere: the app window has no browser menu that would.
@@ -1781,8 +1975,11 @@ document.addEventListener('keydown', ev => {
     location.reload()
     return
   }
+  if (t.id === 'reviewer-input' && ev.key === 'Enter') { ev.preventDefault(); return ACTIONS['add-reviewer']() }
   if (ev.key === 'Escape') {
     if (S.dialog) return closeDialog()
+    // Esc in the search box clears it, then leaves it.
+    if (t.id === 'search') { if (t.value) { t.value = ''; S.query = ''; renderHeader(); renderBoard() } else t.blur(); return }
     if (S.menu) { S.menu = null; return renderBoard() }
     if (S.detail) return closeDetail()
     if (S.picked.size) { S.picked.clear(); return renderBoard() }
@@ -1790,6 +1987,7 @@ document.addEventListener('keydown', ev => {
   if (t.matches('input, textarea') || S.dialog || ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (ev.key === 'r') loadPrs()
   if (ev.key === 'g') setGroup(S.group === 'repo' ? 'lane' : 'repo')
+  if (ev.key === '/') { ev.preventDefault(); $('#search').focus() }
   if (ev.key === 'j') stepDetail(1)
   if (ev.key === 'k') stepDetail(-1)
   if (ev.key === 'n') setShow(S.show === 'needs' ? 'all' : 'needs')

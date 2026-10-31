@@ -105,6 +105,62 @@ pub async fn fetch(repo: &str, number: u64) -> Result<Detail, String> {
     })
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct File {
+    name: String,
+    /// The name before a rename, when GitHub reports one.
+    previous: String,
+    /// added, removed, modified, renamed, copied, changed or unchanged.
+    status: String,
+    additions: u64,
+    deletions: u64,
+    /// The unified diff of the file; empty for a binary file or one too large for GitHub to show.
+    patch: String,
+}
+
+/// The PR's changed files with their diffs, up to GitHub's limit of 3000.
+pub async fn files(repo: &str, number: u64) -> Result<Vec<File>, String> {
+    let path = format!("repos/{repo}/pulls/{number}/files?per_page=100");
+    let out = sh("gh", &["api", "--paginate", "--slurp", &path], Duration::from_secs(60)).await;
+    if out.code != 0 {
+        return Err(first_line(&out.stderr));
+    }
+    let pages: Value = serde_json::from_str(&out.stdout).map_err(|e| format!("GitHub sent something unreadable: {e}"))?;
+    Ok(pages
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_array)
+        .flatten()
+        .map(|f| File {
+            name: text(&f["filename"]),
+            previous: text(&f["previous_filename"]),
+            status: text(&f["status"]),
+            additions: f["additions"].as_u64().unwrap_or(0),
+            deletions: f["deletions"].as_u64().unwrap_or(0),
+            patch: text(&f["patch"]),
+        })
+        .collect())
+}
+
+/// People who can be asked to review in `repo`: its assignable users, which read access can list.
+pub async fn people(repo: &str) -> Result<Vec<String>, String> {
+    let path = format!("repos/{repo}/assignees?per_page=100");
+    let out = sh("gh", &["api", "--paginate", "--jq", ".[].login", &path], Duration::from_secs(30)).await;
+    if out.code != 0 {
+        return Err(first_line(&out.stderr));
+    }
+    let mut people: Vec<String> = out.stdout.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
+    people.sort_by_key(|p| p.to_lowercase());
+    Ok(people)
+}
+
+/// A GitHub user name: letters, digits and single hyphens, at most 39 characters.
+pub fn is_login(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 39 && !s.starts_with('-') && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
 /// A file path inside a repo as raw.githubusercontent.com takes it: owner/repo/ref/path, ref may hold slashes.
 pub fn is_raw_path(p: &str) -> bool {
     p.split('/').count() >= 4
@@ -148,5 +204,13 @@ mod tests {
         assert!(!is_raw_path("a/b/../../evil.png"));
         assert!(!is_raw_path("a/b/c//d.png"));
         assert!(!is_raw_path("a/b/c/d.png?x=1"));
+    }
+
+    #[test]
+    fn logins_are_plain_names() {
+        assert!(is_login("i-zaykov"));
+        assert!(!is_login("--add-reviewer"));
+        assert!(!is_login("a b"));
+        assert!(!is_login(""));
     }
 }

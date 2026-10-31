@@ -265,17 +265,98 @@ struct DetailReq {
     url: String,
 }
 
+/// owner/name and the number of a URL `is_pr_url` passed.
+fn repo_and_number(url: &str) -> (String, u64) {
+    let parts: Vec<&str> = url.trim_start_matches("https://github.com/").split('/').collect();
+    (format!("{}/{}", parts[0], parts[1]), parts[3].parse().unwrap_or(0))
+}
+
 /// One PR in full for the side panel: description, reviews, comments, labels and checks.
 async fn pr_detail(Query(req): Query<DetailReq>) -> Response {
     if !is_pr_url(&req.url) {
         return err(StatusCode::BAD_REQUEST, "Not a pull request URL");
     }
-    let parts: Vec<&str> = req.url.trim_start_matches("https://github.com/").split('/').collect();
-    let number = parts[3].parse().unwrap_or(0);
-    match detail::fetch(&format!("{}/{}", parts[0], parts[1]), number).await {
+    let (repo, number) = repo_and_number(&req.url);
+    match detail::fetch(&repo, number).await {
         Ok(d) => Json(d).into_response(),
         Err(e) => err(StatusCode::BAD_GATEWAY, e),
     }
+}
+
+/// The panel's Code tab: every changed file with its diff.
+async fn pr_files(Query(req): Query<DetailReq>) -> Response {
+    if !is_pr_url(&req.url) {
+        return err(StatusCode::BAD_REQUEST, "Not a pull request URL");
+    }
+    let (repo, number) = repo_and_number(&req.url);
+    match detail::files(&repo, number).await {
+        Ok(files) => Json(files).into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct PeopleReq {
+    repo: String,
+}
+
+/// Who the reviewer picker offers for a repo.
+async fn people(Query(req): Query<PeopleReq>) -> Response {
+    if !release::is_repo(&req.repo) {
+        return err(StatusCode::BAD_REQUEST, "Not a repository name");
+    }
+    match detail::people(&req.repo).await {
+        Ok(people) => Json(people).into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+#[derive(Deserialize)]
+struct CommentReq {
+    url: String,
+    body: String,
+}
+
+/// Posts a comment on the PR from your account.
+async fn pr_comment(Json(req): Json<CommentReq>) -> Response {
+    if !is_pr_url(&req.url) {
+        return err(StatusCode::BAD_REQUEST, "Not a pull request URL");
+    }
+    if req.body.trim().is_empty() {
+        return err(StatusCode::BAD_REQUEST, "The comment is empty");
+    }
+    done(sh("gh", &["pr", "comment", &req.url, "--body", &req.body], Duration::from_secs(60)).await, "Commenting")
+}
+
+#[derive(Deserialize)]
+struct ReviewerReq {
+    url: String,
+    login: String,
+}
+
+/// Asks someone to review the PR.
+async fn pr_reviewer(Json(req): Json<ReviewerReq>) -> Response {
+    if !is_pr_url(&req.url) {
+        return err(StatusCode::BAD_REQUEST, "Not a pull request URL");
+    }
+    if !detail::is_login(&req.login) {
+        return err(StatusCode::BAD_REQUEST, "Not a GitHub user name");
+    }
+    done(sh("gh", &["pr", "edit", &req.url, "--add-reviewer", &req.login], Duration::from_secs(60)).await, "Asking for a review")
+}
+
+/// Opens Terminal in your clone of the PR's repo and checks the PR out there with gh.
+async fn pr_checkout(Json(req): Json<DetailReq>) -> Response {
+    if !is_pr_url(&req.url) {
+        return err(StatusCode::BAD_REQUEST, "Not a pull request URL");
+    }
+    let (repo, number) = repo_and_number(&req.url);
+    let clone = crate::util::checkouts_dir().join(repo.rsplit('/').next().unwrap_or_default());
+    if !clone.join(".git").exists() {
+        return err(StatusCode::NOT_FOUND, format!("No clone of {repo} at {}", clone.display()));
+    }
+    let command = format!("cd {} && gh pr checkout {number}", shq(&clone.to_string_lossy()));
+    done(open_terminal(&command).await, "Opening Terminal")
 }
 
 /// A picture from a repo, for a PR description: owner/repo/ref/path, fetched with your token so a private
@@ -324,6 +405,11 @@ pub fn router(store: Arc<Store>, prs: Arc<Cache>, port: u16) -> Router {
         .route("/api/runs/{id}/{verb}", post(run_verb))
         .route("/api/pr-action", post(pr_action))
         .route("/api/pr-detail", get(pr_detail))
+        .route("/api/pr-files", get(pr_files))
+        .route("/api/people", get(people))
+        .route("/api/pr-comment", post(pr_comment))
+        .route("/api/pr-reviewer", post(pr_reviewer))
+        .route("/api/pr-checkout", post(pr_checkout))
         .route("/img/{*path}", get(repo_image))
         .route("/api/releases", get(release_plans))
         .route("/api/release", post(release_repo))
