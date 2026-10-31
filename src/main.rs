@@ -4,6 +4,7 @@
 //   PR Inbox.app          opens the window (starts the server inside the app)
 //   pr-inbox --server     runs only the server, for a browser at http://localhost:4477
 //   pr-inbox record-review --repo o/r --branch b --sha s --verdict pass|fail [--summary text]
+mod detail;
 mod github;
 mod overview;
 mod release;

@@ -285,7 +285,66 @@ button.state:hover { color: #fff; }
 .toast.err { background: oklch(0.38 0.1 25); color: var(--text); }
 .toast a { color: inherit; font-weight: 700; margin-left: 8px; }
 
+/* The PR panel: click a row and its whole PR opens on the right while the board keeps its place on the left. */
+:root { --detail-w: min(50vw, 780px); }
+body.has-detail { padding-right: var(--detail-w); }
+.pr .row { cursor: pointer; }
+.pr.selected { background: oklch(0.94 0.04 155 / .07); box-shadow: inset 3px 0 0 var(--primary); }
+.detail { position: fixed; top: 0; right: 0; bottom: 0; z-index: 40; width: var(--detail-w); overflow: auto; overscroll-behavior: contain; background: var(--panel); border-left: 1px solid var(--line-strong); }
+.detail.anim { animation: slide .22s cubic-bezier(.2, .8, .2, 1) both; }
+@keyframes slide { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
+.detail-head { position: sticky; top: 0; z-index: 2; display: flex; flex-direction: column; gap: 10px; padding: 14px 24px 16px; background: var(--panel); border-bottom: 1px solid var(--line); }
+.detail-bar { display: flex; align-items: center; gap: 8px; min-height: 32px; }
+.detail-bar .pr-num { font-size: 13px; }
+.detail-title { font-family: var(--display); font-size: 20px; font-weight: 600; line-height: 1.3; text-wrap: pretty; overflow-wrap: anywhere; }
+.detail-sub { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--sub); }
+.detail-sub img { width: 18px; height: 18px; border-radius: 50%; vertical-align: middle; background: var(--raise); }
+.detail-acts { position: relative; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.detail-body { display: flex; flex-direction: column; gap: 22px; padding: 18px 24px 48px; }
+.facts { display: grid; grid-template-columns: 110px 1fr; gap: 10px 16px; align-items: start; }
+.facts > dt { color: var(--dim); padding-top: 2px; }
+.facts > dd { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
+.checks { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; width: 100%; }
+.checks a, .checks span { display: flex; align-items: center; gap: 8px; color: var(--sub); text-decoration: none; font-size: 12.5px; }
+.checks a:hover { color: #fff; }
+.fold > summary { cursor: pointer; list-style: none; display: inline-flex; align-items: center; gap: 6px; color: var(--sub); }
+.fold > summary::-webkit-details-marker { display: none; }
+.fold > summary svg { transition: transform .2s; transform: rotate(-90deg); }
+.fold[open] > summary svg { transform: none; }
+.fold > summary:hover { color: #fff; }
+.sec-title { font-family: var(--display); font-size: 15px; font-weight: 600; color: var(--sub); margin-bottom: 10px; }
+.entries { display: flex; flex-direction: column; gap: 12px; }
+.entry { border: 1px solid var(--line); border-radius: 10px; background: var(--bg); }
+.entry-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 12px; color: var(--sub); }
+.entry-head img { width: 20px; height: 20px; border-radius: 50%; background: var(--raise); }
+.entry-head b { color: var(--text); font-weight: 600; }
+.entry > .md, .entry > .fold > .md { padding: 4px 14px 12px; }
+.entry > .fold > summary { padding: 0 12px 10px; }
+.detail .skeleton { margin: 0; height: 18px; }
+/* GitHub's rendered markdown, in this page's colors. */
+.md { font-size: 14px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere; }
+.md > :first-child { margin-top: 0; }
+.md > :last-child { margin-bottom: 0; }
+.md p, .md ul, .md ol, .md pre, .md table, .md blockquote, .md details { margin: 0 0 12px; }
+.md h1, .md h2, .md h3, .md h4 { font-family: var(--display); font-weight: 600; margin: 20px 0 8px; line-height: 1.3; }
+.md h1 { font-size: 20px; } .md h2 { font-size: 18px; } .md h3 { font-size: 16px; } .md h4 { font-size: 14px; }
+.md ul, .md ol { padding-left: 22px; }
+.md li + li { margin-top: 3px; }
+.md code { background: var(--raise); padding: 1px 5px; border-radius: 5px; font-size: 12.5px; }
+.md pre { background: var(--bg); border: 1px solid var(--line); padding: 10px 12px; border-radius: 8px; overflow: auto; }
+.md pre code { background: none; padding: 0; }
+.md blockquote { padding-left: 12px; border-left: 3px solid var(--line-strong); color: var(--sub); }
+.md table { border-collapse: collapse; display: block; overflow: auto; }
+.md th, .md td { border: 1px solid var(--line-strong); padding: 5px 10px; text-align: left; }
+.md img { max-width: 100%; height: auto; border-radius: 8px; background: var(--raise); }
+.md hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
+.md summary { cursor: pointer; color: var(--sub); }
+.md .anchor, .md .octicon { display: none; }
+.md input[type=checkbox] { accent-color: var(--primary); margin-right: 6px; }
+
 @media (max-width: 760px) {
+  :root { --detail-w: 100vw; }
+  body.has-detail { padding-right: 0; overflow: hidden; }
   .wrap { padding-inline: 16px; }
   .top { position: static; }
   /* The dot stays beside the title; the buttons take their own line under it. */
@@ -315,6 +374,7 @@ button.state:hover { color: #fff; }
 </header>
 <div id="notice"></div>
 <main class="wrap board" id="board"></main>
+<aside class="detail" id="detail" hidden aria-label="Pull request"></aside>
 <div id="dialog"></div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
@@ -328,6 +388,8 @@ const ICON = {
   check: '<path d="M20 6 9 17l-5-5"/>',
   chevron: '<path d="m6 9 6 6 6-6"/>',
   shield: '<path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/><path d="M12 8v4"/><path d="M12 16h.01"/>',
+  x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   rocket: '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
 }
 const icon = (name, size = 16, cls = '') => `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name]}</svg>`
@@ -429,6 +491,8 @@ const S = {
   group: recall('group') === 'repo' ? 'repo' : 'lane', show: recall('show') === 'needs' ? 'needs' : 'all', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
   // The PRs whose runs show as cards under the row instead of the newest one on a line.
   runsOpen: {},
+  // The PR open in the side panel, by key, and each PR's full detail as fetched, by URL.
+  detail: null, details: {},
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
   // The PRs you ticked, by key, for the bar on top to merge, or merge and release.
   picked: new Set(),
@@ -711,31 +775,40 @@ function shipTip(repo) {
   return p?.method === 'tag' ? `Squash-merge, then release ${p.next} from ${p.branch}` : `Squash-merge, then run ${repoName(repo)}'s release workflow`
 }
 
-// `byRepo`: the row sits in its repository's group, so its number goes without the repo name.
-function row(pr, lane, byRepo = false) {
+// A PR's buttons: its lane's next step, the extras, and the menu of everything else. `menuKey` tells the row's
+// menu from the panel's, so opening one never opens both.
+function actsHtml(pr, lane, menuKey) {
   const k = keyOf(pr)
   const run = runFor(pr)
   const done = doneFor(k)
-  const link = (href, body, cls = '') => href ? `<a class="${cls}" href="${esc(href)}" target="_blank" rel="noreferrer">${body}</a>` : `<span class="${cls}">${body}</span>`
-  const fails = pr.failing.slice(0, 4).map(c => link(httpsOnly(c.url), `✕ ${esc(c.name)}${c.cancelled ? ' (cancelled)' : ''}`)).join('')
   const mine = !lane.theirs
+  const link = (href, body) => `<a href="${esc(href)}" target="_blank" rel="noreferrer">${body}</a>`
   const verbs = vs => vs.filter(v => can(v, pr, mine)).map(v => `<button data-act="verb" data-verb="${v}"${VERBS[v].danger ? ' class="danger"' : ''}>${VERBS[v].menu}</button>`).join('')
-  const menu = S.menu !== k ? '' : `<div class="menu" role="menu">
+  const menu = S.menu !== menuKey ? '' : `<div class="menu" role="menu">
       ${link(pr.url, 'Open on GitHub')}${link(pr.url + '/files', 'View changes')}<div class="sep"></div>
       <button data-act="ask">Ask Claude…</button>${verbs(['fix', 'rebase', 'resolve', 'review', 'approve', 'thermo', 'relevance'])}<div class="sep"></div>
       ${verbs(['update', 'ready', 'merge', 'ship', 'admin', 'close'])}
     </div>`
-  let acts
-  if (S.busy[k]) acts = `<span class="state"><span class="spin"></span>${esc(S.busy[k])}</span>`
-  else if (run) acts = `<button class="state" data-act="show-run" data-run="${esc(run.id)}"><span class="spin"></span>${esc(KIND[run.kind]?.[0] || 'Claude working')}</button>`
-  else if (done) acts = `<span class="state ok">${icon('check', 16, first('done:' + k) ? 'pop' : '')}${esc(done)}</span>`
+  if (S.busy[k]) return `<span class="state"><span class="spin"></span>${esc(S.busy[k])}</span>`
+  else if (run) return `<button class="state" data-act="show-run" data-run="${esc(run.id)}"><span class="spin"></span>${esc(KIND[run.kind]?.[0] || 'Claude working')}</button>`
+  else if (done) return `<span class="state ok">${icon('check', 16, first('done:' + k) ? 'pop' : '')}${esc(done)}</span>`
   else {
     let [label, verb] = lane.action || []
     if (verb && !can(verb, pr, mine)) verb = null
     // On your own PRs the thermo-nuclear review stays one click away until the current commit has passed it.
-    acts = `${verb ? `<button class="btn btn-primary" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${extras(pr, verb, mine)}
-      <button class="btn btn-ghost btn-icon" data-act="menu" title="More" aria-label="More actions" aria-expanded="${S.menu === k}">${icon('more')}</button>${menu}`
+    return `${verb ? `<button class="btn btn-primary" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${extras(pr, verb, mine)}
+      <button class="btn btn-ghost btn-icon" data-act="menu" data-menu="${esc(menuKey)}" title="More" aria-label="More actions" aria-expanded="${S.menu === menuKey}">${icon('more')}</button>${menu}`
   }
+}
+
+// `byRepo`: the row sits in its repository's group, so its number goes without the repo name.
+function row(pr, lane, byRepo = false) {
+  const k = keyOf(pr)
+  const done = doneFor(k)
+  const link = (href, body, cls = '') => href ? `<a class="${cls}" href="${esc(href)}" target="_blank" rel="noreferrer">${body}</a>` : `<span class="${cls}">${body}</span>`
+  const fails = pr.failing.slice(0, 4).map(c => link(httpsOnly(c.url), `✕ ${esc(c.name)}${c.cancelled ? ' (cancelled)' : ''}`)).join('')
+  const mine = !lane.theirs
+  const acts = actsHtml(pr, lane, k)
   const info = [
     `+${pr.additions.toLocaleString()} −${pr.deletions.toLocaleString()}`,
     plural(pr.files, 'file'),
@@ -749,11 +822,11 @@ function row(pr, lane, byRepo = false) {
   const why = done || (!idle(pr) ? 'Something is running on it' : `Not ready to merge: ${blockers(pr)}`)
   const pick = !mine ? '<span class="pick" aria-hidden="true"></span>'
     : `<input type="checkbox" class="pick" data-act="pick" aria-label="Select ${esc(short(pr))}"${S.picked.has(k) ? ' checked' : ''}${pickable(pr) ? '' : ` disabled title="${esc(why)}"`}>`
-  return `<article class="pr${done ? ' done' : ''}${mine ? '' : ' theirs'}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
+  return `<article class="pr${done ? ' done' : ''}${mine ? '' : ' theirs'}${S.detail === k ? ' selected' : ''}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
     <div class="row">
       ${pick}<span class="dot" style="--dot:${lane.dot}" title="${esc(`${lane.label}. ${lane.hint}`)}"></span>
       <div class="pr-main">
-        <div class="pr-head">${link(pr.url, esc(pr.title), 'pr-title')}<span class="pr-num">${byRepo ? '' : link(`https://github.com/${pr.repo}`, esc(pr.name))}#${pr.number}</span>${author}</div>
+        <div class="pr-head"><a class="pr-title" href="${esc(pr.url)}" data-act="detail" title="Open here (⌘-click opens GitHub)">${esc(pr.title)}</a><span class="pr-num">${byRepo ? '' : link(`https://github.com/${pr.repo}`, esc(pr.name))}#${pr.number}</span>${author}</div>
         <div class="pr-meta">${tags(pr, lane, byRepo)}<span class="dim">${info}</span></div>
         ${fails ? `<div class="fails">${fails}</div>` : ''}
       </div>
@@ -799,6 +872,7 @@ function strip(pr) {
 function renderBoard() {
   const board = $('#board')
   renderPicked()
+  renderDetail()
   keepFocus(() => {
     const scroll = saveScroll(board)
     board.innerHTML = hero() + boardBody()
@@ -930,6 +1004,155 @@ function releaseInfo(repo) {
   else if (p.unreleased) out.push(commits)
   else if (p.unreleased === 0) out.push(`${esc(p.branch)} fully released`)
   return out.filter(Boolean)
+}
+
+// ---------- the PR panel ----------
+
+// The panel's top (title, people, buttons, state) redraws with the board; its body (description, checks,
+// activity) only when its detail arrives, so images do not reload and folds stay as you left them.
+function renderDetail() {
+  const el = $('#detail')
+  const pr = S.detail ? findPr(S.detail) : null
+  if (S.detail && !pr && S.data) S.detail = null
+  document.body.classList.toggle('has-detail', !!pr)
+  if (!pr) { el.hidden = true; el.innerHTML = ''; delete el.dataset.key; return }
+  // The panel slides in when it opens; moving to another PR swaps its contents in place.
+  if (el.hidden) el.classList.add('anim')
+  el.hidden = false
+  if (el.dataset.key !== S.detail) {
+    el.dataset.key = S.detail
+    el.innerHTML = '<div class="detail-head" id="detail-head"></div><div class="detail-body" id="detail-body"></div>'
+    el.scrollTop = 0
+  }
+  keepFocus(() => { $('#detail-head').innerHTML = detailHead(pr) })
+  const d = S.details[pr.url]
+  const sig = JSON.stringify([pr.url, d?.at, d?.error, !!d?.data])
+  const body = $('#detail-body')
+  if (body.dataset.sig !== sig) {
+    body.dataset.sig = sig
+    body.innerHTML = detailBody(pr, d)
+  }
+}
+
+function detailHead(pr) {
+  const lane = LANE[pr.lane]
+  const k = keyOf(pr)
+  const avatar = `<img src="https://github.com/${esc(encodeURIComponent(pr.author))}.png?size=40" alt="" loading="lazy" onerror="this.remove()">`
+  const fails = pr.failing.slice(0, 6).map(c => httpsOnly(c.url) ? `<a href="${esc(c.url)}" target="_blank" rel="noreferrer">✕ ${esc(c.name)}</a>` : `<span>✕ ${esc(c.name)}</span>`).join('')
+  return `<div class="detail-bar">
+      <span class="dot" style="--dot:${lane.dot}" title="${esc(lane.hint)}"></span><span class="sub">${esc(lane.label)}</span>
+      <span class="pr-num"><a href="https://github.com/${esc(pr.repo)}" target="_blank" rel="noreferrer">${esc(pr.repo)}</a> <a href="${esc(pr.url)}" target="_blank" rel="noreferrer">#${pr.number}</a></span>
+      <div class="grow"></div>
+      <a class="btn btn-sm btn-ghost" href="${esc(pr.url)}/files" target="_blank" rel="noreferrer">Files</a>
+      <a class="btn btn-sm btn-ghost" href="${esc(pr.url)}" target="_blank" rel="noreferrer">${icon('external', 14)}GitHub</a>
+      <button class="btn btn-ghost btn-icon" data-act="detail-close" title="Close (Esc)" aria-label="Close">${icon('x')}</button>
+    </div>
+    <h2 class="detail-title">${esc(pr.title)}</h2>
+    <div class="detail-sub"><span>${avatar} @${esc(pr.author)}</span><span>opened ${esc(age(pr) === 'today' ? 'today' : age(pr) + ' ago')} · updated ${esc(ago(Date.parse(pr.updatedAt)))}</span>
+      <span><code>${esc(pr.base)}</code> ← <code class="branch" title="${esc(pr.head)}">${esc(pr.head)}</code></span>
+      <span>${plural(pr.files, 'file')} <span style="color:var(--ok-ink)">+${pr.additions.toLocaleString()}</span> <span style="color:var(--bad-ink)">−${pr.deletions.toLocaleString()}</span></span></div>
+    <div class="pr-meta">${tags(pr, lane, true)}${pr.openThreads ? `<span class="threads">${plural(pr.openThreads, 'open thread')}</span>` : ''}</div>
+    ${fails ? `<div class="fails">${fails}</div>` : ''}
+    <div class="detail-acts">${actsHtml(pr, lane, 'detail:' + k)}</div>`
+}
+
+function detailBody(pr, d) {
+  if (d?.error && !d.data) return `<div class="notice-box">${icon('alert')}<div class="notice-text">Could not load this PR: ${esc(d.error)}</div><button class="btn btn-sm" data-act="detail-reload">Try again</button></div>`
+  if (!d?.data) return '<div class="skeleton"></div><div class="skeleton" style="width:80%"></div><div class="skeleton" style="width:60%"></div>'
+  const { bodyHtml, labels, timeline, checks } = d.data
+  const reviewers = pr.reviewers.length ? pr.reviewers.map(r => `<span class="tag tag-mute">@${esc(r)}</span>`).join('') : '<span class="dim">None waiting</span>'
+  const facts = `<dl class="facts">
+      <dt>Waiting on</dt><dd>${reviewers}</dd>
+      <dt>Labels</dt><dd>${labels.length ? labels.map(l => `<span class="tag tag-info">${esc(l)}</span>`).join('') : '<span class="dim">None</span>'}</dd>
+      <dt>Checks</dt><dd>${checksHtml(checks)}</dd>
+    </dl>`
+  const desc = bodyHtml.trim() ? `<div class="md">${githubHtml(bodyHtml)}</div>` : '<p class="dim">No description.</p>'
+  const activity = timeline.length ? `<section><div class="sec-title">Activity · ${timeline.length}</div><div class="entries">${timeline.map(entryHtml).join('')}</div></section>` : ''
+  return `${facts}<section><div class="sec-title">Description</div>${desc}</section>${activity}`
+}
+
+// Failing checks first, then running, then the rest; the list folds open on its own only when one failed.
+function checksHtml(checks) {
+  if (!checks.length) return '<span class="dim">None reported</span>'
+  const BAD = ['failure', 'timed_out', 'action_required', 'cancelled']
+  const rank = c => BAD.includes(c.state) ? 0 : c.state === 'running' ? 1 : c.state === 'success' ? 3 : 2
+  const sorted = [...checks].sort((a, b) => rank(a) - rank(b) || a.name.localeCompare(b.name))
+  const n = state => checks.filter(c => state(c.state)).length
+  const bad = n(s => BAD.includes(s)), running = n(s => s === 'running'), ok = n(s => s === 'success')
+  const dot = s => BAD.includes(s) ? 'var(--bad)' : s === 'running' ? 'var(--info)' : s === 'success' ? 'var(--ok)' : 'var(--mute)'
+  const list = sorted.map(c => `<a href="${esc(httpsOnly(c.url) || '#')}" target="_blank" rel="noreferrer"><span class="dot" style="--dot:${dot(c.state)}"></span>${esc(c.name)}<span class="dim">${esc(c.state.replace('_', ' '))}</span></a>`).join('')
+  const summary = [`${ok} of ${checks.length} passing`, bad ? `<span style="color:var(--bad-ink)">${bad} failing</span>` : '', running ? `${running} running` : ''].filter(Boolean).join(' · ')
+  return `<details class="fold"${bad ? ' open' : ''} style="width:100%"><summary>${icon('chevron', 14)}${summary}</summary><div class="checks">${list}</div></details>`
+}
+
+const VERDICT = { APPROVED: ['approved', 'tag-ok'], CHANGES_REQUESTED: ['requested changes', 'tag-bad'], COMMENTED: ['reviewed', 'tag-mute'], DISMISSED: ['review dismissed', 'tag-mute'] }
+
+// A review or comment. Bots write long reports, so theirs start folded.
+function entryHtml(e) {
+  const [verb, cls] = VERDICT[e.state] || ['commented', '']
+  const head = `<img src="https://github.com/${esc(encodeURIComponent(e.author.replace(/\[bot\]$/, '')))}.png?size=40" alt="" loading="lazy" onerror="this.remove()">
+    <b>@${esc(e.author)}</b>${cls ? `<span class="tag ${cls}">${verb}</span>` : `<span>${verb}</span>`}
+    <a class="dim" href="${esc(httpsOnly(e.url) || '#')}" target="_blank" rel="noreferrer">${esc(ago(Date.parse(e.at)))}</a>`
+  const body = e.bodyHtml.trim() ? `<div class="md">${githubHtml(e.bodyHtml)}</div>` : ''
+  if (!body) return `<div class="entry"><div class="entry-head">${head}</div></div>`
+  if (!e.bot) return `<div class="entry"><div class="entry-head">${head}</div>${body}</div>`
+  return `<div class="entry"><div class="entry-head">${head}</div><details class="fold"><summary>${icon('chevron', 14)}Show</summary>${body}</details></div>`
+}
+
+// GitHub's rendered HTML, made to work here: links open in a new tab, and pictures a private repo serves come
+// through /img with your token. Signed private-user-images links already work as they are.
+function githubHtml(html) {
+  const t = document.createElement('template')
+  t.innerHTML = html
+  for (const a of t.content.querySelectorAll('a[href]')) { a.target = '_blank'; a.rel = 'noreferrer' }
+  for (const img of t.content.querySelectorAll('img[src]')) {
+    img.loading = 'lazy'
+    const m = img.getAttribute('src').match(/^https:\/\/(?:github\.com\/([^/]+\/[^/]+)\/(?:blob|raw)\/([^?#]+)|raw\.githubusercontent\.com\/([^?#]+))(?:[?#].*)?$/)
+    const path = m && (m[3] || `${m[1]}/${m[2]}`)
+    if (path && /\.(png|jpe?g|gif|webp)$/i.test(path)) img.src = `/img/${path}`
+  }
+  for (const el of t.content.querySelectorAll('script, style, iframe, object, embed')) el.remove()
+  return t.innerHTML
+}
+
+// Fetches the open PR's detail, unless the copy on hand is from its current update and under a minute old.
+async function loadDetail(force = false) {
+  const pr = S.detail && findPr(S.detail)
+  if (!pr) return
+  const have = S.details[pr.url]
+  if (!force && have?.data && have.updatedAt === pr.updatedAt && Date.now() - have.at < 60000) return
+  try {
+    const data = await api(`/api/pr-detail?url=${encodeURIComponent(pr.url)}`)
+    S.details[pr.url] = { data, at: Date.now(), updatedAt: pr.updatedAt }
+  } catch (e) {
+    S.details[pr.url] = { ...have, error: e.message, at: Date.now() }
+  }
+  renderDetail()
+}
+
+function openDetail(k) {
+  if (S.detail === k) return
+  S.detail = k
+  S.menu = null
+  renderBoard()
+  loadDetail()
+}
+
+function closeDetail() {
+  if (!S.detail) return
+  S.detail = null
+  $('#detail').classList.remove('anim')
+  renderBoard()
+}
+
+// j and k walk the rows as the board shows them, opening each in the panel.
+function stepDetail(by) {
+  const keys = [...document.querySelectorAll('#board .pr')].map(el => el.dataset.key)
+  if (!keys.length) return
+  const i = keys.indexOf(S.detail)
+  const k = keys[i < 0 ? 0 : Math.min(keys.length - 1, Math.max(0, i + by))]
+  openDetail(k)
+  document.querySelector(`#board .pr[data-key="${CSS.escape(k)}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
 }
 
 // ---------- run cards ----------
@@ -1153,6 +1376,7 @@ async function loadPrs() {
     S.data = data
     S.error = null
     loadPlans()
+    loadDetail()
     // GitHub works out mergeability lazily: ask once more so "CI running" rows settle.
     retried = !retried && S.data.settling
     if (retried) setTimeout(loadPrs, 6000)
@@ -1460,11 +1684,14 @@ const ACTIONS = {
   'run-retry': ({ run }) => runVerb(run, 'retry'),
   'run-terminal': ({ run }) => runVerb(run, 'terminal', {}, 'Opened in Terminal'),
   'run-dismiss': ({ run }) => runVerb(run, 'dismiss'),
-  menu: ({ k }) => {
-    S.menu = S.menu === k ? null : k
+  menu: ({ el }) => {
+    const key = el.dataset.menu
+    S.menu = S.menu === key ? null : key
     renderBoard()
     if (S.menu) $('.menu')?.classList.add('anim')
   },
+  'detail-close': () => closeDetail(),
+  'detail-reload': () => loadDetail(true),
   ask: ({ k }) => openDialog({ type: 'ask', k, write: true }),
   // Every row button and menu item that acts on a PR: confirm first when the verb asks for it.
   verb: ({ el, pr, k }) => {
@@ -1515,6 +1742,11 @@ document.addEventListener('click', ev => {
   if (S.menu && el?.dataset.act !== 'menu') { S.menu = null; renderBoard() }
   // Inside the app window, web links open in the default browser instead of replacing the app.
   const link = ev.target.closest('a[href]')
+  // A row's title opens the PR here; ⌘-click still goes to GitHub.
+  if (link?.dataset.act === 'detail' && !ev.metaKey && !ev.ctrlKey) {
+    ev.preventDefault()
+    return openDetail(link.closest('.pr').dataset.key)
+  }
   if (link) {
     if (S.inApp && /^https:\/\//.test(link.href) && !link.href.startsWith(location.origin)) {
       ev.preventDefault()
@@ -1522,9 +1754,13 @@ document.addEventListener('click', ev => {
     }
     return
   }
+  // A click on a row's empty space opens it too; its buttons, ticks and runs keep their own jobs.
+  if (!el && !ev.target.closest('input, label, button, .strip, .strip-runs, .menu') && ev.target.closest('#board .pr .row') && !getSelection().toString()) {
+    return openDetail(ev.target.closest('.pr').dataset.key)
+  }
   const handler = el && ACTIONS[el.dataset.act]
   if (!handler) return
-  const k = el.closest('.pr')?.dataset.key || (el.closest('#dialog') ? S.dialog?.k : null)
+  const k = el.closest('.pr, .detail')?.dataset.key || (el.closest('#dialog') ? S.dialog?.k : null)
   handler({ el, ev, pr: k ? findPr(k) : null, k, run: el.dataset.run, lane: el.dataset.lane })
 })
 
@@ -1548,11 +1784,14 @@ document.addEventListener('keydown', ev => {
   if (ev.key === 'Escape') {
     if (S.dialog) return closeDialog()
     if (S.menu) { S.menu = null; return renderBoard() }
+    if (S.detail) return closeDetail()
     if (S.picked.size) { S.picked.clear(); return renderBoard() }
   }
   if (t.matches('input, textarea') || S.dialog || ev.metaKey || ev.ctrlKey || ev.altKey) return
   if (ev.key === 'r') loadPrs()
   if (ev.key === 'g') setGroup(S.group === 'repo' ? 'lane' : 'repo')
+  if (ev.key === 'j') stepDetail(1)
+  if (ev.key === 'k') stepDetail(-1)
   if (ev.key === 'n') setShow(S.show === 'needs' ? 'all' : 'needs')
 })
 document.querySelectorAll('[data-icon]').forEach(el => { el.outerHTML = icon(el.dataset.icon) })

@@ -2,7 +2,7 @@
 // to localhost (DNS rebinding cannot reach it). Every API call must carry a custom header: other sites
 // cannot add one without a CORS preflight this server never answers, so they can neither read nor write.
 use axum::{
-    extract::{Path, Request, State},
+    extract::{Path, Query, Request, State},
     http::{header, HeaderValue, StatusCode},
     middleware::{self, Next},
     response::{Html, IntoResponse, Response},
@@ -15,6 +15,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::detail;
 use crate::github::{is_pr_url, Cache, PrAction, Snapshot};
 use crate::overview;
 use crate::release::{self, Releases};
@@ -260,6 +261,45 @@ async fn login(Path(tool): Path<String>) -> Response {
 }
 
 #[derive(Deserialize)]
+struct DetailReq {
+    url: String,
+}
+
+/// One PR in full for the side panel: description, reviews, comments, labels and checks.
+async fn pr_detail(Query(req): Query<DetailReq>) -> Response {
+    if !is_pr_url(&req.url) {
+        return err(StatusCode::BAD_REQUEST, "Not a pull request URL");
+    }
+    let parts: Vec<&str> = req.url.trim_start_matches("https://github.com/").split('/').collect();
+    let number = parts[3].parse().unwrap_or(0);
+    match detail::fetch(&format!("{}/{}", parts[0], parts[1]), number).await {
+        Ok(d) => Json(d).into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// A picture from a repo, for a PR description: owner/repo/ref/path, fetched with your token so a private
+/// repo's screenshots show. It sits outside /api/ because an <img> cannot send the PR Inbox header; it only
+/// returns images, so another site gains nothing it could read.
+async fn repo_image(Path(path): Path<String>) -> Response {
+    let ext = path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+    let mime = match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        _ => return err(StatusCode::BAD_REQUEST, "Only png, jpg, gif and webp images"),
+    };
+    if !detail::is_raw_path(&path) {
+        return err(StatusCode::BAD_REQUEST, "Not a repository file");
+    }
+    match detail::image(&path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, mime), (header::CACHE_CONTROL, "private, max-age=3600")], bytes).into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+#[derive(Deserialize)]
 struct OpenReq {
     url: String,
 }
@@ -283,6 +323,8 @@ pub fn router(store: Arc<Store>, prs: Arc<Cache>, port: u16) -> Router {
         .route("/api/runs/{id}", get(get_run))
         .route("/api/runs/{id}/{verb}", post(run_verb))
         .route("/api/pr-action", post(pr_action))
+        .route("/api/pr-detail", get(pr_detail))
+        .route("/img/{*path}", get(repo_image))
         .route("/api/releases", get(release_plans))
         .route("/api/release", post(release_repo))
         .route("/api/login/{tool}", post(login))
