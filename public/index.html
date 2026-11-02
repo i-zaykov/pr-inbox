@@ -487,7 +487,7 @@ const VERBS = {
   // Your admin rights merge past a missing approval or a branch behind its base. The server decides which
   // PRs qualify (adminMergeable) and checks again before merging; the dialog spells out what it skips.
   admin: { menu: 'Admin merge…', gh: 'admin-merge', mine: true, ship: true, when: pr => pr.adminMergeable, doing: 'Admin merging', did: 'Merged' },
-  close: { menu: 'Close…', gh: 'close', mine: true, danger: true, doing: 'Closing', did: 'Closed', confirm: {
+  close: { menu: 'Close…', gh: 'close', danger: true, doing: 'Closing', did: 'Closed', confirm: {
     title: pr => `Close ${short(pr)}?`,
     body: pr => `<p style="margin:0">Closes <b>${esc(pr.title)}</b> without merging. You can reopen it on GitHub.</p>`,
     go: 'Close PR' } },
