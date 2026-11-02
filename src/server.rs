@@ -92,8 +92,10 @@ async fn index() -> Html<&'static str> {
 
 async fn health() -> Json<Value> {
     let t = Duration::from_secs(20);
+    // GraphQL, not REST: the list reads GitHub over GraphQL, and a spent REST quota made `gh api user` fail
+    // and showed you as signed out while the PRs still loaded.
     let (gh, auth, ver) = tokio::join!(
-        sh("gh", &["api", "user", "--jq", ".login"], t),
+        sh("gh", &["api", "graphql", "-f", "query={viewer{login}}", "--jq", ".data.viewer.login"], t),
         sh("claude", &["auth", "status"], t),
         sh("claude", &["--version"], t),
     );
