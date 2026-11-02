@@ -286,8 +286,15 @@ button.state:hover { color: #fff; }
 .toast a { color: inherit; font-weight: 700; margin-left: 8px; }
 
 /* The PR panel: click a row and its whole PR opens on the right while the board keeps its place on the left. */
-:root { --detail-w: min(50vw, 780px); }
+:root { --detail-w: clamp(360px, var(--detail-user, min(50vw, 780px)), calc(100vw - 480px)); }
 body.has-detail { padding-right: var(--detail-w); }
+/* With the panel open the board fills the space left of it, so no gap opens between the two. */
+body.has-detail .wrap { max-width: none; }
+/* Drag the panel's left edge to resize it; double-click to reset. */
+.detail-grip { position: fixed; top: 0; bottom: 0; right: calc(var(--detail-w) - 4px); z-index: 41; width: 8px; cursor: col-resize; touch-action: none; }
+.detail-grip:hover, .detail-grip.drag { background: linear-gradient(90deg, transparent 3px, var(--primary) 3px, var(--primary) 5px, transparent 5px); }
+body:not(.has-detail) .detail-grip { display: none; }
+body.resizing { cursor: col-resize; user-select: none; }
 .pr .row { cursor: pointer; }
 .pr.selected { background: oklch(0.94 0.04 155 / .07); box-shadow: inset 3px 0 0 var(--primary); }
 .detail { position: fixed; top: 0; right: 0; bottom: 0; z-index: 40; width: var(--detail-w); overflow: auto; overscroll-behavior: contain; background: var(--panel); border-left: 1px solid var(--line-strong); }
@@ -385,6 +392,7 @@ body.has-detail { padding-right: var(--detail-w); }
 @media (max-width: 760px) {
   :root { --detail-w: 100vw; }
   body.has-detail { padding-right: 0; overflow: hidden; }
+  .detail-grip { display: none; }
   .wrap { padding-inline: 16px; }
   .top { position: static; }
   /* The dot stays beside the title; the buttons take their own line under it. */
@@ -417,6 +425,7 @@ body.has-detail { padding-right: var(--detail-w); }
 <div id="notice"></div>
 <main class="wrap board" id="board"></main>
 <aside class="detail" id="detail" hidden aria-label="Pull request"></aside>
+<div class="detail-grip" id="detail-grip" role="separator" aria-orientation="vertical" aria-label="Resize the PR panel" title="Drag to resize, double-click to reset"></div>
 <div id="dialog"></div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
@@ -1069,6 +1078,30 @@ function releaseInfo(repo) {
 }
 
 // ---------- the PR panel ----------
+
+// The panel's width follows its left edge as you drag it and is kept for next time. CSS clamps it to the window.
+{
+  const grip = $('#detail-grip'), root = document.documentElement.style
+  const setWidth = w => w ? root.setProperty('--detail-user', w + 'px') : root.removeProperty('--detail-user')
+  setWidth(+recall('detail-w') || 0)
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault()
+    grip.setPointerCapture(e.pointerId)
+    grip.classList.add('drag')
+    document.body.classList.add('resizing')
+  })
+  grip.addEventListener('pointermove', e => {
+    if (grip.hasPointerCapture(e.pointerId)) setWidth(Math.round(innerWidth - e.clientX))
+  })
+  grip.addEventListener('lostpointercapture', () => {
+    grip.classList.remove('drag')
+    document.body.classList.remove('resizing')
+    // Keep the width the panel shows, not a drag past the clamp.
+    const w = Math.round($('#detail').getBoundingClientRect().width)
+    if (w) { setWidth(w); remember('detail-w', w) }
+  })
+  grip.addEventListener('dblclick', () => { setWidth(0); remember('detail-w', '') })
+}
 
 // The panel's top (title, people, buttons, state) redraws with the board; its body (description, checks,
 // activity) only when its detail arrives, so images do not reload and folds stay as you left them.
