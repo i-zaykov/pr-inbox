@@ -135,6 +135,10 @@ pub struct Pr {
     pub your_review: Option<YourReview>,
     /// The Approve run may take this PR: `approve_refusal` has nothing against it.
     pub approvable: bool,
+    /// Who has changes requested on it: each reviewer whose latest review asks for changes.
+    pub changes_by: Vec<String>,
+    /// When the newest of those reviews was sent; empty when there is none.
+    pub changes_at: String,
 }
 
 impl Pr {
@@ -221,6 +225,7 @@ const FIELDS: &str = r#"
   reviewThreads(first: 100) { nodes { isResolved } }
   labels(first: 20) { nodes { name } }
   viewerLatestReview { state }
+  latestOpinionatedReviews(first: 20) { nodes { state submittedAt author { login } } }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 100) { nodes {
     __typename
     ... on CheckRun { name conclusion status detailsUrl startedAt completedAt }
@@ -350,7 +355,13 @@ fn to_pr(n: &Value) -> Pr {
         // No review, or a state this binary does not know, reads as None.
         your_review: serde_json::from_value(n["viewerLatestReview"]["state"].clone()).ok(),
         approvable: false,
+        changes_by: Vec::new(),
+        changes_at: String::new(),
     };
+    for r in nodes("/latestOpinionatedReviews/nodes").iter().filter(|r| r["state"] == "CHANGES_REQUESTED") {
+        pr.changes_by.push(r.pointer("/author/login").and_then(Value::as_str).unwrap_or("ghost").to_string());
+        pr.changes_at = pr.changes_at.clone().max(text(r, "/submittedAt"));
+    }
     pr.writable = pr.write_refusal().is_none();
     pr
 }
@@ -601,6 +612,11 @@ mod tests {
         assert_eq!(got, [(1, Some(YourReview::Approved), true), (2, Some(YourReview::Approved), false), (3, Some(YourReview::Commented), true)]);
         assert_eq!(to_pr(&json!({ "viewerLatestReview": { "state": "CHANGES_REQUESTED" } })).your_review, Some(YourReview::ChangesRequested));
         assert_eq!(to_pr(&json!({ "viewerLatestReview": null })).your_review, None);
+        let asked = to_pr(&json!({ "latestOpinionatedReviews": { "nodes": [
+            { "state": "CHANGES_REQUESTED", "submittedAt": "2026-10-30T18:15:07Z", "author": { "login": "a" } },
+            { "state": "APPROVED", "submittedAt": "2026-10-31T09:00:00Z", "author": { "login": "b" } },
+            { "state": "CHANGES_REQUESTED", "submittedAt": "2026-10-23T06:54:41Z", "author": { "login": "c" } } ] } }));
+        assert_eq!((asked.changes_by, asked.changes_at.as_str()), (vec!["a".to_string(), "c".to_string()], "2026-10-30T18:15:07Z"));
         let yours = Pr { lane: Lane::Ready, ..Default::default() };
         assert_eq!(yours.approve_refusal(), Some("Only someone else's PR can be approved"));
     }
