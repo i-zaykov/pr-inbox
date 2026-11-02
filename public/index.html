@@ -636,10 +636,12 @@ function focusEnd(id) {
 function allPrs() {
   return S.data ? [...S.data.mine, ...S.data.others] : []
 }
-// Someone else's PR you approved or asked changes on, and nobody has asked you to look at again; or one a
-// reviewer asked changes on that has no commit since, so it waits on its author, not on you.
+// Someone else's PR you approved or asked changes on, and nobody has asked you to look at again; one a
+// reviewer asked changes on that has no commit since, so it waits on its author; or one another reviewer
+// asked changes on, so that reviewer has it.
 const awaitsAuthor = pr => LANE[pr.lane].theirs && pr.changesAt && pr.committedAt && pr.committedAt < pr.changesAt
-const handled = pr => (pr.lane === 'reviewed' && ['APPROVED', 'CHANGES_REQUESTED'].includes(pr.yourReview)) || awaitsAuthor(pr)
+const othersReviewing = pr => LANE[pr.lane].theirs && (pr.changesBy || []).some(l => l !== S.data?.login)
+const handled = pr => (pr.lane === 'reviewed' && ['APPROVED', 'CHANGES_REQUESTED'].includes(pr.yourReview)) || awaitsAuthor(pr) || othersReviewing(pr)
 // "@a, @b", with you named as "you".
 const changesBy = pr => (pr.changesBy || []).map(l => l === S.data?.login ? 'you' : '@' + l).join(', ')
 // The PRs the board lists: all of them, or with "Show: Needs me" all but the handled ones. Runs and lookups
@@ -732,7 +734,7 @@ function renderHeader() {
   if (S.data && !pills.some(p => p.id === S.lane)) S.lane = 'all'
   const show = choose('show', S.show, 'Which pull requests to show', 'Show', [
     ['all', 'Everyone', 'Every PR in your inbox (N)'],
-    ['needs', 'Needs me', 'Hides PRs you already approved or asked changes on, until someone asks for your review again, and PRs a reviewer asked changes on that have no commit since (N)'],
+    ['needs', 'Needs me', 'Hides PRs you already approved or asked changes on, until someone asks for your review again, and PRs another reviewer asked changes on or that wait on their author (N)'],
   ])
   const group = choose('group', S.group, 'Group pull requests', 'Group by', [['lane', 'Status', 'Group by status (G)'], ['repo', 'Repository', 'Group by repository (G)']])
   const pillsHtml = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('')
