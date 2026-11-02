@@ -139,6 +139,10 @@ pub struct Pr {
     pub changes_by: Vec<String>,
     /// When the newest of those reviews was sent; empty when there is none.
     pub changes_at: String,
+    /// When your latest review was sent; empty when you have not reviewed it.
+    pub your_review_at: String,
+    /// When someone last asked you by name to review it; empty when nobody has, or on your own PRs.
+    pub asked_at: String,
 }
 
 impl Pr {
@@ -224,7 +228,8 @@ const FIELDS: &str = r#"
   reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
   reviewThreads(first: 100) { nodes { isResolved } }
   labels(first: 20) { nodes { name } }
-  viewerLatestReview { state }
+  viewerLatestReview { state submittedAt }
+  timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) { nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } } } }
   latestOpinionatedReviews(first: 20) { nodes { state submittedAt author { login } } }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 100) { nodes {
     __typename
@@ -357,6 +362,8 @@ fn to_pr(n: &Value) -> Pr {
         approvable: false,
         changes_by: Vec::new(),
         changes_at: String::new(),
+        your_review_at: text(n, "/viewerLatestReview/submittedAt"),
+        asked_at: String::new(),
     };
     for r in nodes("/latestOpinionatedReviews/nodes").iter().filter(|r| r["state"] == "CHANGES_REQUESTED") {
         pr.changes_by.push(r.pointer("/author/login").and_then(Value::as_str).unwrap_or("ghost").to_string());
@@ -364,6 +371,12 @@ fn to_pr(n: &Value) -> Pr {
     }
     pr.writable = pr.write_refusal().is_none();
     pr
+}
+
+/// When `login` was last asked by name to review the PR in node `n`; empty when never.
+fn asked_at(n: &Value, login: &str) -> String {
+    let nodes = n.pointer("/timelineItems/nodes").and_then(Value::as_array).cloned().unwrap_or_default();
+    nodes.iter().filter(|e| e.pointer("/requestedReviewer/login").and_then(Value::as_str) == Some(login)).map(|e| text(e, "/createdAt")).max().unwrap_or_default()
 }
 
 /// Which bucket one of your PRs belongs in: the first rule that matches wins. A PR last updated at or
@@ -421,19 +434,20 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
         pr.admin_mergeable = pr.admin_merge_refusal().is_none();
     }
     // Each PR is listed once, in the first list that has it: a reviewed PR whose review is requested again waits.
+    let login = text(doc, "/data/viewer/login");
     let mut seen: HashSet<String> = mine.iter().map(|p| p.url.clone()).collect();
     let others: Vec<Pr> = [("/data/reviews/nodes", Lane::Waiting), ("/data/assigned/nodes", Lane::Waiting), ("/data/reviewed/nodes", Lane::Reviewed)]
         .iter()
         .flat_map(|&(ptr, lane)| nodes(ptr).into_iter().map(move |n| (n, lane)))
         .filter(|(n, _)| live(&n) && n["url"].as_str().is_some_and(|u| seen.insert(u.to_string())))
         .map(|(n, lane)| {
-            let mut pr = Pr { lane, ..to_pr(&n) };
+            let mut pr = Pr { lane, asked_at: asked_at(&n, &login), ..to_pr(&n) };
             pr.approvable = pr.approve_refusal().is_none();
             pr
         })
         .collect();
     let settling = mine.iter().any(|p| p.mergeable == Mergeable::Unknown);
-    Ok(Snapshot { fetched_at: now, login: text(doc, "/data/viewer/login"), mine, others, warning, settling })
+    Ok(Snapshot { fetched_at: now, login, mine, others, warning, settling })
 }
 
 pub async fn fetch_prs() -> Result<Snapshot, String> {
@@ -616,6 +630,9 @@ mod tests {
             { "state": "CHANGES_REQUESTED", "submittedAt": "2026-10-30T18:15:07Z", "author": { "login": "a" } },
             { "state": "APPROVED", "submittedAt": "2026-10-31T09:00:00Z", "author": { "login": "b" } },
             { "state": "CHANGES_REQUESTED", "submittedAt": "2026-10-23T06:54:41Z", "author": { "login": "c" } } ] } }));
+        let ask = |who: &str, at: &str| json!({ "createdAt": at, "requestedReviewer": { "login": who } });
+        let n = json!({ "timelineItems": { "nodes": [ask("me", "2026-10-20T00:00:00Z"), ask("me", "2026-10-27T00:00:00Z"), ask("b", "2026-10-28T00:00:00Z"), { "createdAt": "2026-10-29T00:00:00Z", "requestedReviewer": { "name": "team" } }] } });
+        assert_eq!((asked_at(&n, "me").as_str(), asked_at(&n, "nobody").as_str()), ("2026-10-27T00:00:00Z", ""));
         assert_eq!((asked.changes_by, asked.changes_at.as_str()), (vec!["a".to_string(), "c".to_string()], "2026-10-30T18:15:07Z"));
         let yours = Pr { lane: Lane::Ready, ..Default::default() };
         assert_eq!(yours.approve_refusal(), Some("Only someone else's PR can be approved"));

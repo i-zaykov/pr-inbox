@@ -640,8 +640,11 @@ function allPrs() {
 // reviewer asked changes on that has no commit since, so it waits on its author; or one another reviewer
 // asked changes on, so that reviewer has it.
 const awaitsAuthor = pr => LANE[pr.lane].theirs && pr.changesAt && pr.committedAt && pr.committedAt < pr.changesAt
+// A request for your review sent after your own review, or after another reviewer asked changes, puts the PR
+// back on you, so it shows again.
 const othersReviewing = pr => LANE[pr.lane].theirs && (pr.changesBy || []).some(l => l !== S.data?.login)
-const handled = pr => (pr.lane === 'reviewed' && ['APPROVED', 'CHANGES_REQUESTED'].includes(pr.yourReview)) || awaitsAuthor(pr) || othersReviewing(pr)
+const askedAgain = pr => LANE[pr.lane].theirs && !!pr.askedAt && [pr.yourReviewAt, pr.changesAt].some(t => t && pr.askedAt > t)
+const handled = pr => !askedAgain(pr) && ((pr.lane === 'reviewed' && ['APPROVED', 'CHANGES_REQUESTED'].includes(pr.yourReview)) || awaitsAuthor(pr) || othersReviewing(pr))
 // "@a, @b", with you named as "you".
 const changesBy = pr => (pr.changesBy || []).map(l => l === S.data?.login ? 'you' : '@' + l).join(', ')
 // The PRs the board lists: all of them, or with "Show: Needs me" all but the handled ones. Runs and lookups
@@ -820,6 +823,8 @@ function tags(pr, lane, byRepo) {
   else ({ pass: () => tag('CI passing', 'tag-ok'), fail: () => tag('CI failing', 'tag-bad'), running: () => tag('CI running', 'tag-mute'), none: () => tag('No checks', 'tag-mute') })[pr.ci]()
   if (pr.mergeable === 'CONFLICTING') tag('Conflicts', 'tag-bad')
   if (pr.mergeState === 'BEHIND') tag('Behind base', 'tag-warn')
+  if (askedAgain(pr)) tag(`↻ Asked again ${ago(Date.parse(pr.askedAt))}`, 'tag-info',
+    pr.yourReviewAt && pr.askedAt > pr.yourReviewAt ? 'Your review was requested again after you reviewed it' : 'Your review was requested again after a reviewer asked for changes')
   const approved = pr.yourReview === 'APPROVED'
   if (approved) tag('✓ You approved', 'tag-ok')
   if (pr.review === 'REVIEW_REQUIRED') tag(approved ? 'Needs another approval' : 'Needs approval', 'tag-mute')
