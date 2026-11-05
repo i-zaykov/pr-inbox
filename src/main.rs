@@ -5,20 +5,25 @@
 //   pr-inbox --server     runs only the server, for a browser at http://localhost:4477
 //   pr-inbox record-review --repo o/r --branch b --sha s --verdict pass|fail [--summary text]
 mod detail;
+mod deep_link;
 mod github;
 mod overview;
+mod overnight;
 mod release;
 mod reviews;
+mod review_flow;
 mod runs;
 mod server;
 mod util;
 mod workspace;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use tauri::Manager;
 
 const PORT: u16 = 4477;
 
 fn main() {
+    util::fix_path();
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("record-review") {
         match reviews::record_from_args(&args[2..]) {
@@ -30,7 +35,6 @@ fn main() {
         }
         return;
     }
-    util::fix_path();
     let headless = std::env::args().any(|a| a == "--server");
     let port: u16 = std::env::var("PR_INBOX_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(PORT);
 
@@ -42,11 +46,14 @@ fn main() {
         Ok(listener) => {
             let store = Arc::new(runs::Store::load());
             let prs = Arc::new(github::Cache::default());
-            let app = server::router(store.clone(), prs.clone(), port);
+            let overnight = Arc::new(overnight::Batch::load());
+            store.set_overnight_limit(overnight.active());
+            let app = server::router(store.clone(), prs.clone(), overnight.clone(), port);
             runtime.spawn(async move {
                 let _ = axum::serve(listener, app).await;
             });
             runtime.spawn(runs::ticker(store.clone()));
+            runtime.spawn(overnight::worker(overnight, store.clone(), prs.clone()));
             runtime.spawn(overview::morning_loop(store, prs));
             eprintln!("PR Inbox is serving http://localhost:{port}");
         }
@@ -65,15 +72,46 @@ fn main() {
     }
 
     let url = format!("http://localhost:{port}/?app=1");
+    let links = Arc::new(Mutex::new(deep_link::Delivery::default()));
+    let page_links = links.clone();
     tauri::Builder::default()
         .setup(move |app| {
             tauri::WebviewWindowBuilder::new(app, "main", tauri::WebviewUrl::External(url.parse().expect("valid url")))
+                .on_page_load(move |window, payload| {
+                    let mut links = page_links.lock().unwrap();
+                    links.ready = payload.event() == tauri::webview::PageLoadEvent::Finished
+                        && payload.url().scheme() == "http" && payload.url().host_str() == Some("localhost")
+                        && payload.url().port() == Some(port);
+                    if links.ready {
+                        for request in links.pending.drain(..) {
+                            deep_link::deliver(&window, request);
+                        }
+                    }
+                })
                 .title("PR Inbox")
                 .inner_size(1480.0, 960.0)
                 .min_inner_size(820.0, 560.0)
                 .build()?;
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("run the PR Inbox window");
+        .build(tauri::generate_context!())
+        .expect("build the PR Inbox window")
+        .run(move |app, event| {
+            if let tauri::RunEvent::Opened { urls } = event {
+                let window = app.get_webview_window("main");
+                if let Some(window) = &window {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+                let mut links = links.lock().unwrap();
+                for url in urls {
+                    let request = deep_link::Request::from(deep_link::parse(&url));
+                    match &window {
+                        Some(window) if links.ready => deep_link::deliver(window, request),
+                        _ => links.pending.push(request),
+                    }
+                }
+            }
+        });
 }

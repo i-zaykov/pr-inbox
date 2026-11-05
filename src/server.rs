@@ -18,6 +18,7 @@ use std::time::Duration;
 use crate::detail;
 use crate::github::{is_pr_url, Cache, PrAction, Snapshot};
 use crate::overview;
+use crate::overnight;
 use crate::release::{self, Releases};
 use crate::reviews;
 use crate::runs::{NewRun, RunError, Store};
@@ -30,6 +31,7 @@ struct App {
     store: Arc<Store>,
     prs: Arc<Cache>,
     releases: Arc<Releases>,
+    overnight: Arc<overnight::Batch>,
     port: u16,
 }
 
@@ -130,12 +132,31 @@ async fn list_prs(State(app): State<Shared>) -> Response {
         tokio::spawn(async move { workspace::sweep(open, store.active_dirs()).await });
     }
     let ledger = reviews::load();
-    let thermo = snap.mine.iter().filter_map(|p| reviews::standing(&ledger, p).map(|s| (p.url.clone(), s))).collect();
+    let thermo = reviews::standings(&ledger, &snap.mine).await;
     Json(PrList { snap, thermo }).into_response()
 }
 
 async fn list_runs(State(app): State<Shared>) -> Json<Value> {
     Json(app.store.list())
+}
+
+async fn overnight_status(State(app): State<Shared>) -> Json<Value> {
+    Json(app.overnight.status())
+}
+
+async fn start_overnight(State(app): State<Shared>) -> Response {
+    // Finish persisting the batch even if the initiating window or scheduled task goes away.
+    match tokio::spawn(async move { app.overnight.start(&app.store, &app.prs).await }).await {
+        Ok(Ok(status)) => Json(status).into_response(),
+        Ok(Err(message)) => err(StatusCode::CONFLICT, message),
+        Err(_) => err(StatusCode::INTERNAL_SERVER_ERROR, "Starting the review batch failed"),
+    }
+}
+
+async fn stop_overnight(State(app): State<Shared>) -> Json<Value> {
+    app.overnight.stop();
+    app.store.finish_preparation().await;
+    Json(app.overnight.status())
 }
 
 #[derive(Deserialize)]
@@ -242,8 +263,8 @@ async fn run_verb(State(app): State<Shared>, Path((id, verb)): Path<(String, Str
     let store = &app.store;
     match verb.as_str() {
         "stop" => store.stop(&id).map(Json).into_response(),
-        "retry" => store.reply(&id, None).map(Json).into_response(),
-        "reply" => store.reply(&id, Some(body.unwrap_or_default().0.text)).map(Json).into_response(),
+        "retry" => store.reply(&id, None).await.map(Json).into_response(),
+        "reply" => store.reply(&id, Some(body.unwrap_or_default().0.text)).await.map(Json).into_response(),
         "dismiss" => store.dismiss(&id).map(|_| Json(json!({ "ok": true }))).into_response(),
         "terminal" => match store.takeover(&id) {
             Ok((cwd, session)) => done(open_terminal(&format!("cd {} && claude --resume {}", shq(&cwd), shq(&session))).await, "Opening Terminal"),
@@ -281,6 +302,18 @@ async fn pr_detail(Query(req): Query<DetailReq>) -> Response {
     let (repo, number) = repo_and_number(&req.url);
     match detail::fetch(&repo, number).await {
         Ok(d) => Json(d).into_response(),
+        Err(e) => err(StatusCode::BAD_GATEWAY, e),
+    }
+}
+
+/// Read-only lookup for a native deep link, including PRs outside the viewer's inbox.
+async fn pr_summary(Query(req): Query<DetailReq>) -> Response {
+    let url = match crate::deep_link::normalize_pr_url(&req.url) {
+        Ok(url) => url,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+    match crate::github::fetch_linked_pr(&url).await {
+        Ok(pr) => Json(pr).into_response(),
         Err(e) => err(StatusCode::BAD_GATEWAY, e),
     }
 }
@@ -395,18 +428,22 @@ async fn open_url(Json(req): Json<OpenReq>) -> Response {
     done(sh("open", &[&req.url], Duration::from_secs(10)).await, "Opening the link")
 }
 
-pub fn router(store: Arc<Store>, prs: Arc<Cache>, port: u16) -> Router {
-    let app = Arc::new(App { store, prs, releases: Arc::new(Releases::default()), port });
+pub fn router(store: Arc<Store>, prs: Arc<Cache>, overnight: Arc<overnight::Batch>, port: u16) -> Router {
+    let app = Arc::new(App { store, prs, overnight, releases: Arc::new(Releases::default()), port });
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
         .route("/api/health", get(health))
         .route("/api/prs", get(list_prs))
         .route("/api/runs", get(list_runs).post(create_run))
+        .route("/api/overnight", get(overnight_status))
+        .route("/api/overnight/start", post(start_overnight))
+        .route("/api/overnight/stop", post(stop_overnight))
         .route("/api/runs/{id}", get(get_run))
         .route("/api/runs/{id}/{verb}", post(run_verb))
         .route("/api/pr-action", post(pr_action))
         .route("/api/pr-detail", get(pr_detail))
+        .route("/api/pr-summary", get(pr_summary))
         .route("/api/pr-files", get(pr_files))
         .route("/api/people", get(people))
         .route("/api/pr-comment", post(pr_comment))
@@ -424,6 +461,13 @@ pub fn router(store: Arc<Store>, prs: Arc<Cache>, port: u16) -> Router {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_summary_link_is_validated_before_contacting_github() {
+        for url in ["https://evil.test/o/r/pull/7", "https://github.com/o/r/pull/0", "file:///etc/passwd", "pr-inbox://merge"] {
+            assert_eq!(pr_summary(Query(DetailReq { url: url.into() })).await.status(), StatusCode::BAD_REQUEST);
+        }
+    }
 
     /// A path, its headers, and the refusal expected.
     type Case<'a> = (&'a str, &'a [(&'a str, &'a str)], Option<&'a str>);

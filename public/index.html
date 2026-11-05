@@ -298,7 +298,7 @@ body.has-detail .wrap { max-width: none; }
 body:not(.has-detail) .detail-grip { display: none; }
 body.resizing { cursor: col-resize; user-select: none; }
 .pr .row { cursor: pointer; }
-.pr.selected { background: oklch(0.94 0.04 155 / .07); box-shadow: inset 3px 0 0 var(--primary); }
+.pr.selected { background: oklch(0.94 0.04 155 / .14); box-shadow: inset 4px 0 0 var(--primary); }
 .detail { position: fixed; top: 0; right: 0; bottom: 0; z-index: 40; width: var(--detail-w); overflow: auto; overscroll-behavior: contain; background: var(--panel); border-left: 1px solid var(--line-strong); }
 .detail.anim { animation: slide .22s cubic-bezier(.2, .8, .2, 1) both; }
 @keyframes slide { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
@@ -419,12 +419,14 @@ body.resizing { cursor: col-resize; user-select: none; }
     <input class="input search" id="search" type="search" placeholder="Search  /  repo: author: label: #123" aria-label="Search pull requests" autocomplete="off" spellcheck="false">
     <span class="dim updated" id="updated"></span>
     <button class="btn" id="refresh-btn" data-act="refresh" title="Refresh the PRs (⌘R reloads the app)"><span data-icon="refresh"></span>Refresh</button>
+    <button class="btn" id="overnight-btn" data-act="overnight-start" title="Review your eligible PRs with up to two writers at once. Fixes and pushes changes, checks CI, never merges or releases. Stops starting new work nine hours after the batch starts.">Run reviews</button>
     <button class="btn btn-primary" data-act="triage"><span data-icon="sparkle"></span>Triage with Claude</button>
   </div>
   <div class="wrap filters" id="filters"></div>
   <div class="wrap" id="picked"></div>
 </header>
 <div id="notice"></div>
+<div id="overnight"></div>
 <main class="wrap board" id="board"></main>
 <aside class="detail" id="detail" hidden aria-label="Pull request"></aside>
 <div class="detail-grip" id="detail-grip" role="separator" aria-orientation="vertical" aria-label="Resize the PR panel" title="Drag to resize, double-click to reset"></div>
@@ -464,19 +466,19 @@ const VERBS = {
   resolve: { menu: 'Resolve conflicts, then review', run: 'resolve', writes: true, mine: true, when: pr => pr.mergeable === 'CONFLICTING' },
   review: { menu: 'Review with Claude', run: 'review' },
   // Offered until the PR's current commit has passed the review; a new commit makes it outdated and offers it again.
-  thermo: { menu: 'Thermo-nuclear review', run: 'thermo', writes: true, mine: true, when: pr => review(pr).state !== 'pass' },
+  thermo: { menu: 'Thermo review, fix & push', run: 'thermo', writes: true, mine: true, when: pr => review(pr).state !== 'pass' },
   relevance: { menu: 'Still relevant? Close or rescue', run: 'relevance', writes: true, mine: true, confirm: {
     title: pr => `Is ${short(pr)} still relevant?`,
     body: pr => `<p style="margin:0">Claude works out what <b>${esc(pr.title)}</b> was for and checks it against today's <code>${esc(pr.base)}</code>.</p>
        <p style="margin:0">If it was replaced or no longer matters, <b>Claude closes the PR</b> (no comment, branch kept; you can reopen it). If it is still needed, Claude rescues it: merges <code>${esc(pr.base)}</code>, resolves conflicts, fixes CI and pushes.</p>`,
     go: 'Check it' } },
   address: { run: 'task', note: ADDRESS, writes: true },
-  // Someone else's PR: Claude reviews it without changing it, then approves or requests changes from your account.
+  // Someone else's PR: Claude only reviews. PR Inbox validates and publishes the review from your account.
   // The server says when (approvable): not once you approved, until someone asks for your review again.
-  approve: { menu: 'Thermo review, then approve…', run: 'approve', writes: true, when: pr => pr.approvable, confirm: {
+  approve: { menu: 'Thermo review, then approve…', run: 'approve', when: pr => pr.approvable, confirm: {
     title: pr => `Thermo review ${short(pr)}, then approve?`,
     body: pr => `<p style="margin:0">Claude runs the thermo-nuclear review on <b>${esc(pr.title)}</b> by @${esc(pr.author)} without changing the PR.</p>
-       <p style="margin:0">If nothing critical turns up, <b>Claude approves it from your account</b> with a short, funny comment. If something critical does, it <b>requests changes</b> and lists what to fix.</p>`,
+       <p style="margin:0"><b>PR Inbox publishes the review from your account</b> after checking that the reviewed commits still match the PR. A passing review approves it. Blocking findings request changes and list what to fix. An incomplete review publishes nothing.</p>`,
     go: 'Review it' } },
   update: { menu: 'Update branch', gh: 'update', doing: 'Updating', did: 'Updated' },
   ready: { menu: 'Mark ready for review', gh: 'ready', when: pr => pr.isDraft, doing: 'Marking ready', did: 'Marked ready' },
@@ -494,7 +496,7 @@ const VERBS = {
     body: pr => `<p style="margin:0">Closes <b>${esc(pr.title)}</b> without merging. You can reopen it on GitHub.</p>`,
     go: 'Close PR' } },
 }
-const can = (v, pr, mine) => { const V = VERBS[v]; return (!V.writes || pr.writable) && (!V.mine || mine) && (!V.when || V.when(pr)) }
+const can = (v, pr, mine) => { const V = VERBS[v]; return (!pr.state || pr.state === 'OPEN') && (!V.writes || pr.writable) && (!V.mine || mine) && (!V.when || V.when(pr)) }
 
 // One model per bucket: the server decides each PR's lane; the bucket says what you can do with it.
 // `action` is [label, verb] for the row's primary button; `bulk` runs its verb on the whole bucket; `theirs`
@@ -525,7 +527,7 @@ const LANES = [
 ]
 const LANE = Object.fromEntries(LANES.map(l => [l.id, l]))
 // Per run kind: what a PR's row says while the run works on it, and what it calls a finished one.
-const KIND = { fix: ['Fixing CI', 'Fix CI'], rebase: ['Rebasing', 'Rebase'], review: ['Review started', 'Review'], thermo: ['Reviewing code', 'Thermo review'], resolve: ['Resolving, then reviewing', 'Resolve & review'], approve: ['Reviewing, then approving', 'Thermo & approve'],
+const KIND = { fix: ['Fixing CI', 'Fix CI'], rebase: ['Rebasing', 'Rebase'], review: ['Review started', 'Review'], thermo: ['Reviewing, fixing & pushing', 'Thermo review, fix & push'], resolve: ['Resolving, then reviewing', 'Resolve & review'], approve: ['Reviewing, then publishing', 'Thermo & approve'],
   relevance: ['Checking relevance', 'Relevance check'], ask: ['Claude working', 'Claude request'], task: ['Claude working', 'Claude request'] }
 const RUN_DOT = { done: 'var(--ok)', running: 'var(--info)', queued: 'var(--info)', failed: 'var(--bad)', stopped: 'var(--mute)', interrupted: 'var(--mute)' }
 // Retry starts a run of the same kind fresh from the PR, so a run whose directory is gone gets today's worktree.
@@ -538,14 +540,16 @@ const remember = (key, value) => { try { localStorage.setItem(`pr-inbox:${key}`,
 
 const S = {
   inApp: new URLSearchParams(location.search).has('app'),
-  data: null, runs: [], health: null, loading: false, error: null,
+  data: null, runs: [], health: null, overnight: null, overnightBusy: false, loading: false, error: null,
   // How each of your repos releases (from /api/releases), why one could not be checked, and releases in flight.
   plans: {}, planErrors: {}, releasing: {},
   group: recall('group') === 'repo' ? 'repo' : 'lane', show: recall('show') === 'needs' ? 'needs' : 'all', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
   // The PRs whose runs show as cards under the row instead of the newest one on a line.
   runsOpen: {},
   // The PR open in the side panel, by key, and each PR's full detail as fetched, by URL.
-  detail: null, details: {},
+  detail: null, details: {}, reveal: null, revealAfterLoad: null,
+  // PRs opened from another app stay outside the inbox's counts and bulk actions.
+  linkedPrs: {}, linkedLogin: '',
   // The PRs open as tabs in the panel, in order; which view the panel shows; each PR's changed files, by URL.
   tabs: [], view: 'summary', files: {},
   // The search box, the people each repo can ask to review, whether the picker is open, and comment drafts by URL.
@@ -646,10 +650,22 @@ const awaitsAuthor = pr => LANE[pr.lane].theirs && pr.changesAt && pr.committedA
 // back on you, so it shows again.
 const othersReviewing = pr => LANE[pr.lane].theirs && (pr.changesBy || []).some(l => l !== S.data?.login)
 const askedAgain = pr => LANE[pr.lane].theirs && !!pr.askedAt && [pr.yourReviewAt, pr.changesAt].some(t => t && pr.askedAt > t)
+// You asked changes and the author pushed since: the head is no longer the commit your review was on, so the
+// PR is back on you even if nobody re-requested your review.
+const pushedSince = pr => LANE[pr.lane].theirs && pr.yourReview === 'CHANGES_REQUESTED' && !!pr.yourReviewSha && !!pr.headSha && pr.yourReviewSha !== pr.headSha
 // Someone else's PR you chose to skip: PR url to when you skipped it. A new request for your review brings it back.
 const skippedAt = () => { try { return JSON.parse(recall('skipped') || '{}') } catch { return {} } }
 const skipped = pr => { const at = LANE[pr.lane].theirs && skippedAt()[pr.url]; return !!at && !(pr.askedAt > at) }
-const handled = pr => skipped(pr) || !askedAgain(pr) && ((pr.lane === 'reviewed' && ['APPROVED', 'CHANGES_REQUESTED'].includes(pr.yourReview)) || awaitsAuthor(pr) || othersReviewing(pr))
+// Someone else's PR you already handed to a Claude review that is queued, running or done. A failed or stopped
+// run keeps the PR on you, and a request for your review after the run started brings it back.
+const REVIEW_KINDS = ['review', 'thermo', 'resolve', 'approve']
+const sentToClaude = pr => LANE[pr.lane].theirs && runsOf(pr).some(r => REVIEW_KINDS.includes(r.kind)
+  && ['queued', 'running', 'done'].includes(r.status) && !(Date.parse(pr.askedAt) > r.startedAt))
+// A pending request for your review does not override another reviewer's request for changes; only a request
+// sent after it (askedAgain) puts the PR back on you.
+// A push after your request for changes brings it back too, unless a Claude review of it is still running.
+const handled = pr => skipped(pr) || sentToClaude(pr) && (!pushedSince(pr) || !!runFor(pr)) || !askedAgain(pr) && !pushedSince(pr) && (awaitsAuthor(pr) || othersReviewing(pr)
+  || !pr.reviewRequested && LANE[pr.lane].theirs && ['APPROVED', 'CHANGES_REQUESTED'].includes(pr.yourReview))
 // "@a, @b", with you named as "you".
 const changesBy = pr => (pr.changesBy || []).map(l => l === S.data?.login ? 'you' : '@' + l).join(', ')
 // The PRs the board lists: all of them, or with "Show: Needs me" all but the handled ones. Runs and lookups
@@ -671,12 +687,12 @@ function matches(pr, query) {
   })
 }
 
-const findPr = k => allPrs().find(pr => keyOf(pr) === k)
+const findPr = k => allPrs().find(pr => keyOf(pr) === k) || S.linkedPrs[k]
 const runFor = pr => S.runs.find(r => r.prUrl === pr.url && active(r))
 // A PR's runs, newest first, as the server lists them.
 const runsOf = pr => S.runs.filter(r => r.prUrl === pr.url)
-// The PR a run sits under on the board, while that PR is still in your inbox.
-const prOf = r => r.prUrl ? allPrs().find(p => p.url === r.prUrl) : null
+// Runs also belong to directly opened PRs, without adding those PRs to inbox bulk actions.
+const prOf = r => r.prUrl ? allPrs().find(p => p.url === r.prUrl) || Object.values(S.linkedPrs).find(p => p.url === r.prUrl) : null
 // The runs whose kind last failed or was cut off on this PR, and that Retry may start again: a request in your
 // words resumes; any other kind restarts only while its action still applies and asks nothing first.
 function retryable(pr) {
@@ -742,7 +758,7 @@ function renderHeader() {
   if (S.data && !pills.some(p => p.id === S.lane)) S.lane = 'all'
   const show = choose('show', S.show, 'Which pull requests to show', 'Show', [
     ['all', 'Everyone', 'Every PR in your inbox (N)'],
-    ['needs', 'Needs me', 'Hides PRs you skipped, PRs you already approved or asked changes on, until someone asks for your review again, and PRs another reviewer asked changes on or that wait on their author (N)'],
+    ['needs', 'Needs me', 'Hides PRs you skipped or sent to a Claude review, PRs you already approved or asked changes on, until someone asks for your review again or the author pushes after your request for changes, and PRs another reviewer asked changes on or that wait on their author (N)'],
   ])
   const group = choose('group', S.group, 'Group pull requests', 'Group by', [['lane', 'Status', 'Group by status (G)'], ['repo', 'Repository', 'Group by repository (G)']])
   const pillsHtml = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('')
@@ -822,6 +838,10 @@ function heroBody(o) {
 function tags(pr, lane, byRepo) {
   const out = []
   const tag = (label, cls, title = '') => out.push(`<span class="tag ${cls}"${title ? ` title="${esc(title)}"` : ''}>${label}</span>`)
+  if (pr.state && pr.state !== 'OPEN') {
+    tag(pr.state === 'MERGED' ? 'Merged' : 'Closed', 'tag-mute')
+    return out.join('')
+  }
   if (byRepo && lane.id === 'ready') tag('Ready to merge', 'tag-ok')
   if (byRepo && lane.theirs) tag(lane.label, 'tag-info')
   if (pr.ci === 'fail' && pr.mergeState === 'UNSTABLE') tag('Optional check failing', 'tag-warn', 'GitHub does not require this check; the PR can still merge')
@@ -831,6 +851,7 @@ function tags(pr, lane, byRepo) {
   if (skipped(pr)) tag('Skipped', 'tag-mute', 'Hidden under Needs me until someone asks for your review again')
   else if (askedAgain(pr)) tag(`↻ Asked again ${ago(Date.parse(pr.askedAt))}`, 'tag-info',
     pr.yourReviewAt && pr.askedAt > pr.yourReviewAt ? 'Your review was requested again after you reviewed it' : 'Your review was requested again after a reviewer asked for changes')
+  else if (pushedSince(pr)) tag('↻ Pushed since your review', 'tag-info', `You asked for changes on ${pr.yourReviewSha.slice(0, 7)}; the head is now ${pr.headSha.slice(0, 7)}`)
   const approved = pr.yourReview === 'APPROVED'
   if (approved) tag('✓ You approved', 'tag-ok')
   if (pr.review === 'REVIEW_REQUIRED') tag(approved ? 'Needs another approval' : 'Needs approval', 'tag-mute')
@@ -849,13 +870,13 @@ function tags(pr, lane, byRepo) {
 }
 
 // The thermo-nuclear review's standing comes with the PR list: the server finds the review of the PR's
-// head commit, or of its branch or PR Inbox's own pr-inbox/<number> branch, and marks it outdated once the
-// PR has newer commits.
+// head commit, or of its branch or PR Inbox's own pr-inbox/<number> branch. An unchanged reviewed diff
+// can retain its verdict after a rebase once CI passes.
 function review(pr) {
-  const t = S.data.thermo?.[pr.url]
+  const t = S.data?.thermo?.[pr.url]
   if (!t) return { state: 'none', tip: 'No thermo-nuclear review recorded for this branch' }
   const tip = `${t.summary ? t.summary + ' · ' : ''}reviewed ${t.sha.slice(0, 7)} ${ago(t.at)}`
-  return { state: t.state, tip: t.state === 'outdated' ? tip + '; the PR has newer commits' : tip }
+  return { state: t.state, tip: t.state === 'outdated' ? tip + '; the current changes need review' : tip + (t.sha !== pr.headSha ? '; reviewed diff unchanged, current CI passing' : '') }
 }
 
 // What Merge & release does on a PR of `repo`, for the button's tooltip.
@@ -867,6 +888,7 @@ function shipTip(repo) {
 // A PR's buttons: its lane's next step, the extras, and the menu of everything else. `menuKey` tells the row's
 // menu from the panel's, so opening one never opens both.
 function actsHtml(pr, lane, menuKey) {
+  if (pr.state && pr.state !== 'OPEN') return `<span class="dim">This pull request is ${pr.state === 'MERGED' ? 'merged' : 'closed'}.</span>`
   const k = keyOf(pr)
   const run = runFor(pr)
   const done = doneFor(k)
@@ -893,7 +915,7 @@ function actsHtml(pr, lane, menuKey) {
 }
 
 // `byRepo`: the row sits in its repository's group, so its number goes without the repo name.
-function row(pr, lane, byRepo = false) {
+function row(pr, lane, byRepo = false, linked = false) {
   const k = keyOf(pr)
   const done = doneFor(k)
   const link = (href, body, cls = '') => href ? `<a class="${cls}" href="${esc(href)}" target="_blank" rel="noreferrer">${body}</a>` : `<span class="${cls}">${body}</span>`
@@ -911,9 +933,9 @@ function row(pr, lane, byRepo = false) {
   const author = mine ? '' : `<span class="author" title="Opened by @${esc(pr.author)}"><img src="https://github.com/${esc(encodeURIComponent(pr.author))}.png?size=40" alt="" loading="lazy" onerror="this.remove()">@${esc(pr.author)}</span>`
   // Your PRs that cannot merge yet keep a greyed-out tick that says why.
   const why = done || (!idle(pr) ? 'Something is running on it' : `Not ready to merge: ${blockers(pr)}`)
-  const pick = !mine ? '<span class="pick" aria-hidden="true"></span>'
+  const pick = !mine || linked ? '<span class="pick" aria-hidden="true"></span>'
     : `<input type="checkbox" class="pick" data-act="pick" aria-label="Select ${esc(short(pr))}"${S.picked.has(k) ? ' checked' : ''}${pickable(pr) ? '' : ` disabled title="${esc(why)}"`}>`
-  return `<article class="pr${done ? ' done' : ''}${mine ? '' : ' theirs'}${S.detail === k ? ' selected' : ''}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
+  return `<article class="pr${done ? ' done' : ''}${mine ? '' : ' theirs'}${S.detail === k ? ' selected' : ''}" aria-current="${S.detail === k}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
     <div class="row">
       ${pick}<span class="dot" style="--dot:${lane.dot}" title="${esc(`${lane.label}. ${lane.hint}`)}"></span>
       <div class="pr-main">
@@ -935,10 +957,10 @@ function extras(pr, verb, mine) {
   const one = verb === 'merge' && can('ship', pr, mine) ? button('ship', `${icon('rocket', 14)}Merge &amp; release`, `${shipTip(pr.repo)} (⌘↵)`)
     : can('resolve', pr, mine) ? button('resolve', `${icon('sparkle', 14)}Resolve &amp; review`, `One Claude run: merge ${pr.base} and resolve the conflicts, push, then run the thermo-nuclear review on the result. It stops before the review if the conflicts need you.`)
     : can('admin', pr, mine) ? button('admin', `${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}`, 'Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.')
-    : can('approve', pr, mine) ? button('approve', `${icon('sparkle', 14)}Thermo &amp; approve`, `Thermo-nuclear review without changing the PR, then approve with a funny comment, or request changes if something is critical. You confirm first.`)
+    : can('approve', pr, mine) ? button('approve', `${icon('sparkle', 14)}Thermo &amp; approve`, `Claude reviews without changing the PR. PR Inbox checks the reviewed commits and publishes approval or requests changes. You confirm first.`)
     : verb !== 'relevance' && can('relevance', pr, mine) ? button('relevance', 'Still relevant?', `Claude checks it against today's ${pr.base}: closes it if it no longer matters, rescues it if it does`)
     : `<a class="btn" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open on GitHub</a>`
-  const thermo = can('thermo', pr, mine) ? button('thermo', `${icon('sparkle', 14)}Thermo review`, "Run the thermo-nuclear review on this PR's branch") : ''
+  const thermo = can('thermo', pr, mine) ? button('thermo', `${icon('sparkle', 14)}Review, fix &amp; push`, "Run the thermo-nuclear review, fix findings, push changes, and review the final code again") : ''
   return one + thermo
 }
 
@@ -949,10 +971,11 @@ const runName = r => KIND[r.kind]?.[1] || 'Claude run'
 function strip(pr) {
   const runs = runsOf(pr)
   if (!runs.length) return '<div class="strip"><span class="dim">No runs yet</span></div>'
-  const open = !!S.runsOpen[keyOf(pr)]
+  const inInbox = allPrs().some(p => p.url === pr.url)
+  const open = !!S.runsOpen[keyOf(pr)] && inInbox
   const again = idle(pr) ? retryable(pr) : []
   const retry = again.length ? `<button class="btn btn-sm btn-ghost" data-act="retry-all" title="Start ${esc(again.map(runName).join(', '))} again">${again.length > 1 ? 'Retry all' : 'Retry'}</button>` : ''
-  const toggle = `<button class="btn btn-sm btn-ghost strip-toggle" data-act="runs-toggle" aria-expanded="${open}">${icon('chevron', 14)}<b>${plural(runs.length, 'run')}</b></button>`
+  const toggle = `<button class="btn btn-sm btn-ghost strip-toggle" ${inInbox ? 'data-act="runs-toggle"' : `data-act="show-run" data-run="${esc(runs[0].id)}"`} aria-expanded="${open}">${icon('chevron', 14)}<b>${plural(runs.length, 'run')}</b></button>`
   if (open) return `<div class="strip">${toggle}${retry}</div><div class="strip-runs">${runs.map(runCard).join('')}</div>`
   const r = runs[0]
   const text = active(r) ? `${KIND[r.kind]?.[0] || 'Claude working'} · started ${ago(r.startedAt)}` : `${runName(r)} ${r.status} ${ago(r.endedAt || r.startedAt)}`
@@ -971,6 +994,7 @@ function renderBoard() {
     animateNew(board)
     restoreScroll(board, scroll)
   })
+  revealSelectedRow()
 }
 
 // The bar under the filters while any PR on the board can be ticked: a select-all tick, and what the ticks can
@@ -1012,9 +1036,17 @@ const tickedIn = prs => prs.filter(pr => S.picked.has(keyOf(pr)))
 const mixed = root => root.querySelectorAll('[data-mixed]').forEach(el => { el.indeterminate = true })
 
 function boardBody() {
-  if (!S.data) return S.error ? '' : '<div class="panel"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>'
+  const opened = openedPrRow()
+  if (!S.data) return opened + (S.error ? '' : '<div class="panel"><div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div></div>')
   const buckets = S.group === 'repo' ? repoBuckets() : laneBuckets()
-  return buckets || `<div class="panel empty">${S.query.trim() ? `No pull request matches “${esc(S.query.trim())}”.` : S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`
+  return opened + (buckets || `<div class="panel empty">${S.query.trim() ? `No pull request matches “${esc(S.query.trim())}”.` : S.data.mine.length ? 'Nothing in this bucket right now.' : 'You have no open pull requests.'}</div>`)
+}
+
+// A directly opened PR still has a selected row when it is absent from the inbox. It gets no bulk tick.
+function openedPrRow() {
+  const pr = S.detail && findPr(S.detail)
+  if (!pr || allPrs().some(p => keyOf(p) === S.detail)) return ''
+  return `<section class="group" aria-label="Opened pull request"><div class="group-head"><h2>Opened pull request</h2><span class="sub">${S.data ? 'Outside your inbox' : 'Loading your inbox…'}</span></div><div class="panel">${row(pr, LANE[pr.lane], false, true)}</div></section>`
 }
 
 // The tick in a group's heading: it ticks every PR of the group a tick can take, and unticks them once all are.
@@ -1139,10 +1171,18 @@ function renderDetail() {
   el.hidden = false
   if (el.dataset.key !== S.detail) {
     el.dataset.key = S.detail
-    el.innerHTML = '<div class="detail-head" id="detail-head"></div><div class="detail-body" id="detail-body"></div>'
+    el.innerHTML = '<div class="detail-head" id="detail-head"></div><div id="detail-runs"></div><div class="detail-body" id="detail-body"></div>'
     el.scrollTop = 0
   }
   keepFocus(() => { $('#detail-head').innerHTML = detailHead(pr) })
+  const runs = $('#detail-runs')
+  const runSig = JSON.stringify([pr.url, allPrs().some(p => p.url === pr.url), ...runsOf(pr).map(r => [r.id, cardSig(r)])])
+  if (runs.dataset.sig !== runSig) {
+    const scroll = saveScroll(runs)
+    keepFocus(() => { runs.innerHTML = detailRunCards(pr) })
+    runs.dataset.sig = runSig
+    restoreScroll(runs, scroll)
+  }
   const d = S.view === 'code' ? S.files[pr.url] : S.details[pr.url]
   const sig = JSON.stringify([S.view, pr.url, d?.at, d?.error, !!d?.data, S.picking, S.posting, S.people[pr.repo]?.length])
   const body = $('#detail-body')
@@ -1150,6 +1190,13 @@ function renderDetail() {
     body.dataset.sig = sig
     keepFocus(() => { body.innerHTML = S.view === 'code' ? codeBody(pr, d) : detailBody(pr, d) })
   }
+}
+
+// Linked PRs keep their runs in the panel. Inbox PRs already own their run cards on the board.
+function detailRunCards(pr) {
+  if (allPrs().some(p => p.url === pr.url)) return ''
+  const runs = runsOf(pr)
+  return runs.length ? `<section class="detail-body" aria-label="Pull request runs">${runs.map(runCard).join('')}</section>` : ''
 }
 
 function detailHead(pr) {
@@ -1168,7 +1215,7 @@ function detailHead(pr) {
     </div>`
   const nFiles = S.files[pr.url]?.data?.length ?? pr.files
   return `${tabs}<div class="detail-bar">
-      <span class="dot" style="--dot:${lane.dot}" title="${esc(lane.hint)}"></span><span class="sub">${esc(lane.label)}</span>
+      <span class="dot" style="--dot:${lane.dot}" title="${esc(lane.hint)}"></span><span class="sub">${esc(pr.state && pr.state !== 'OPEN' ? pr.state === 'MERGED' ? 'Merged' : 'Closed' : lane.label)}</span>
       <span class="pr-num"><a href="https://github.com/${esc(pr.repo)}" target="_blank" rel="noreferrer">${esc(pr.repo)}</a> <a href="${esc(pr.url)}" target="_blank" rel="noreferrer">#${pr.number}</a></span>
       <div class="grow"></div>
       <span class="anchor-wrap"><button class="btn btn-sm btn-ghost" data-act="menu" data-menu="checkout:${esc(k)}" aria-expanded="${S.menu === 'checkout:' + k}" title="${esc(checkout)}">Check out${icon('chevron', 14)}</button>${coMenu}</span>
@@ -1192,9 +1239,9 @@ function detailBody(pr, d) {
   const { bodyHtml, labels, timeline, checks } = d.data
   const reviewers = pr.reviewers.length ? pr.reviewers.map(r => `<span class="tag tag-mute">@${esc(r)}</span>`).join('') : '<span class="dim">None waiting</span>'
   const people = S.people[pr.repo] || []
-  const picker = !S.picking ? `<button class="btn btn-sm btn-ghost" data-act="pick-reviewer" title="Ask someone to review">+ Add</button>`
+  const picker = pr.state && pr.state !== 'OPEN' ? '' : !S.picking ? `<button class="btn btn-sm btn-ghost" data-act="pick-reviewer" title="Ask someone to review">+ Add</button>`
     : `<div class="picker"><input class="input" id="reviewer-input" list="people-list" placeholder="${people.length ? 'GitHub user name' : 'Loading people…'}" autocomplete="off">
-       <datalist id="people-list">${people.filter(p => p !== S.data.login && p !== pr.author).map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+       <datalist id="people-list">${people.filter(p => p !== (S.data?.login || S.linkedLogin) && p !== pr.author).map(p => `<option value="${esc(p)}">`).join('')}</datalist>
        <button class="btn btn-sm btn-primary" data-act="add-reviewer">Ask</button><button class="btn btn-sm btn-ghost" data-act="pick-reviewer">Cancel</button></div>`
   const facts = `<dl class="facts">
       <dt>Waiting on</dt><dd>${reviewers}${picker}</dd>
@@ -1202,7 +1249,7 @@ function detailBody(pr, d) {
       <dt>Checks</dt><dd>${checksHtml(checks)}</dd>
     </dl>`
   const desc = bodyHtml.trim() ? `<div class="md">${githubHtml(bodyHtml)}</div>` : '<p class="dim">No description.</p>'
-  const compose = `<div class="compose"><textarea class="input" id="comment-input" data-act="comment-draft" placeholder="Comment on ${esc(short(pr))} as @${esc(S.data.login)} (⌘↵ posts)">${esc(S.comments[pr.url] || '')}</textarea>
+  const compose = `<div class="compose"><textarea class="input" id="comment-input" data-act="comment-draft" placeholder="Comment on ${esc(short(pr))} as @${esc(S.data?.login || S.linkedLogin)} (⌘↵ posts)">${esc(S.comments[pr.url] || '')}</textarea>
       <div class="row-end"><button class="btn btn-sm btn-primary" data-act="comment-send"${S.posting ? ' disabled' : ''}>${S.posting ? '<span class="spin"></span>Posting' : 'Comment'}</button></div></div>`
   const activity = `<section><div class="sec-title">Activity${timeline.length ? ` · ${timeline.length}` : ''}</div><div class="entries">${timeline.map(entryHtml).join('')}</div>${compose}</section>`
   return `${facts}<section><div class="sec-title">Description</div>${desc}</section>${activity}`
@@ -1312,9 +1359,64 @@ async function loadPeople(repo) {
   renderDetail()
 }
 
+// ---------- linked PRs ----------
+
+let linkedSeq = 0
+async function openLinkedPr(url) {
+  const seq = ++linkedSeq
+  try {
+    if (typeof url !== 'string' || !url) throw new Error('The link has no pull request URL')
+    let pr = allPrs().find(pr => pr.url === url)
+    if (!pr) {
+      const result = await api(`/api/pr-summary?url=${encodeURIComponent(url)}`)
+      // A slower earlier request must not replace the PR the user opened most recently.
+      if (seq !== linkedSeq) return
+      pr = result.pr
+      S.linkedLogin = result.login
+      S.linkedPrs[keyOf(pr)] = pr
+    }
+    const alreadyOpen = S.detail === keyOf(pr)
+    openDetail(keyOf(pr))
+    if (alreadyOpen) loadDetail(true)
+  } catch (e) {
+    if (seq === linkedSeq) toast(`Could not open the pull request: ${e.message}`, true)
+  }
+}
+
+// ---------- detail selection ----------
+
+// Only remove filters that hide the requested PR. Keep the user's grouping and matching filters.
+function prepareDetailReveal() {
+  const pr = S.detail && findPr(S.detail)
+  if (!pr) return
+  if (allPrs().some(p => keyOf(p) === S.detail)) {
+    if (!matches(pr, S.query)) { S.query = ''; $('#search').value = '' }
+    if (S.show === 'needs' && handled(pr)) S.show = 'all'
+    if (S.lane !== 'all' && S.lane !== pr.lane) S.lane = 'all'
+  }
+  S.reveal = S.detail
+}
+
+function revealSelectedRow() {
+  if (!S.reveal || S.reveal !== S.detail) return
+  const row = document.querySelector(`#board .pr[data-key="${CSS.escape(S.reveal)}"] .row`)
+  if (!row) return
+  row.style.scrollMarginTop = `${($('.top')?.offsetHeight || 0) + 16}px`
+  row.scrollIntoView({ block: 'center', behavior: 'instant' })
+  S.reveal = null
+}
+
+// A cold link may first show a temporary row, then move into its repository after the inbox arrives.
+function settleDetailReveal() {
+  if (!S.data) return
+  if (S.revealAfterLoad && S.revealAfterLoad === S.detail) prepareDetailReveal()
+  S.revealAfterLoad = null
+}
+
 // Opening a PR adds a tab for it, at most six; `replace` swaps the current tab instead, as j and k do.
 function openDetail(k, replace = false) {
-  if (S.detail === k) return
+  if (!findPr(k)) return
+  const changed = S.detail !== k
   const at = S.tabs.indexOf(S.detail)
   if (!S.tabs.includes(k)) {
     if (replace && at >= 0) S.tabs[at] = k
@@ -1323,8 +1425,11 @@ function openDetail(k, replace = false) {
   S.detail = k
   S.menu = null
   S.picking = false
+  S.revealAfterLoad = !S.data ? k : null
+  prepareDetailReveal()
+  renderHeader()
   renderBoard()
-  loadDetail()
+  if (changed) loadDetail()
 }
 
 function closeTab(k) {
@@ -1339,6 +1444,8 @@ function closeDetail() {
   if (!S.detail) return
   S.detail = null
   S.tabs = []
+  S.reveal = null
+  S.revealAfterLoad = null
   $('#detail').classList.remove('anim')
   renderBoard()
 }
@@ -1350,7 +1457,6 @@ function stepDetail(by) {
   const i = keys.indexOf(S.detail)
   const k = keys[i < 0 ? 0 : Math.min(keys.length - 1, Math.max(0, i + by))]
   openDetail(k, true)
-  document.querySelector(`#board .pr[data-key="${CSS.escape(k)}"]`)?.scrollIntoView({ block: 'nearest', behavior: 'smooth' })
 }
 
 // ---------- run cards ----------
@@ -1360,6 +1466,7 @@ function runCard(r) {
   const id = esc(r.id)
   const under = prOf(r)
   const open = S.openRun === r.id
+  const sessionActions = !r.reviewJob || r.reviewJob.stage === 'repair'
   // Claude Code reports an API-price estimate on every run; it is only money spent when the run used an API key.
   const billed = r.costUsd && r.apiKeySource && r.apiKeySource !== 'none' ? `$${r.costUsd.toFixed(2)} API` : ''
   const status = active(r) && r.stopRequested ? 'stopping' : r.status
@@ -1380,15 +1487,15 @@ function runCard(r) {
         ${r.prompt ? `<div class="ev-note">Prompt</div><div class="ev-you" style="align-self:stretch;max-width:none">${esc(r.prompt)}</div>` : ''}${partial}
         ${events.map(e => `<div class="ev-${e.kind}">${e.kind === 'text' || e.kind === 'result' ? inline(e.text) : esc(e.text)}</div>`).join('')}
       </div>` : ''
-    const reply = S.replyOpen[r.id] && !active(r) ? `<div class="reply">
+    const reply = sessionActions && S.replyOpen[r.id] && !active(r) ? `<div class="reply">
         <textarea class="input" id="reply-${id}" data-act="reply-draft" data-run="${id}" placeholder="Reply to Claude in this run">${esc(S.replyDrafts[r.id] || '')}</textarea>
         <div class="run-acts"><button class="btn btn-sm btn-primary" data-act="reply-send" data-run="${id}">Send</button><button class="btn btn-sm btn-ghost" data-act="reply-cancel" data-run="${id}">Cancel</button></div>
       </div>` : ''
     const acts = active(r)
       ? `<button class="btn btn-sm" data-act="run-stop" data-run="${id}" ${r.stopRequested ? 'disabled' : ''}>${r.stopRequested ? 'Stopping…' : 'Stop'}</button>`
-      : `<button class="btn btn-sm" data-act="reply-open" data-run="${id}">Reply</button>
+      : `${sessionActions ? `<button class="btn btn-sm" data-act="reply-open" data-run="${id}">Reply</button>` : ''}
          ${r.status === 'failed' ? `<button class="btn btn-sm" data-act="run-again" data-run="${id}">Retry</button>` : r.status !== 'done' ? `<button class="btn btn-sm" data-act="run-retry" data-run="${id}">Resume</button>` : ''}
-         ${r.sessionStarted ? `<button class="btn btn-sm" data-act="run-terminal" data-run="${id}">Open in Terminal</button>` : ''}
+         ${sessionActions && r.sessionStarted ? `<button class="btn btn-sm" data-act="run-terminal" data-run="${id}">Open in Terminal</button>` : ''}
          <button class="btn btn-sm btn-ghost" data-act="run-dismiss" data-run="${id}">Dismiss</button>`
     body = `<div class="run-body">
       <div class="run-output">${output}</div>
@@ -1617,6 +1724,7 @@ async function loadPrs() {
   } finally {
     if (seq === prsSeq) {
       S.loading = false
+      settleDetailReveal()
       renderAll()
     }
   }
@@ -1661,6 +1769,35 @@ async function loadRuns() {
   runsTimer = setTimeout(loadRuns, S.runs.some(active) && !document.hidden ? 1500 : 8000)
 }
 
+// The batch persists on the server, so closing this window does not interrupt it.
+function renderOvernight() {
+  const batch = S.overnight
+  const button = $('#overnight-btn')
+  button.disabled = S.overnightBusy || !!batch?.active
+  button.textContent = batch?.active ? 'Review batch running' : 'Run reviews'
+  if (!batch?.night) { $('#overnight').innerHTML = ''; return }
+  const stop = batch.active ? '<button class="btn btn-sm" data-act="overnight-stop" title="Stop starting reviews. Reviews already running will finish.">Stop queue</button>' : ''
+  $('#overnight').innerHTML = `<div class="wrap notice"><div class="notice-box" role="status"><div class="notice-text"><strong>Review batch</strong> <span class="sub">${esc(batch.message || batch.state || '')}</span>${batch.error ? `<div class="sub">${esc(batch.error)}</div>` : ''}</div>${stop}</div></div>`
+}
+
+let overnightTimer = null
+async function loadOvernight() {
+  clearTimeout(overnightTimer)
+  try { S.overnight = await api('/api/overnight'); renderOvernight() } catch {}
+  overnightTimer = setTimeout(loadOvernight, S.overnight?.active ? 5000 : 30000)
+}
+
+async function overnightAction(verb) {
+  if (S.overnightBusy) return
+  S.overnightBusy = true
+  renderOvernight()
+  try {
+    S.overnight = await api(`/api/overnight/${verb}`, {})
+    toast(verb === 'start' ? S.overnight.active ? 'Review batch running. Reviews can fix and push; they never merge or release.' : S.overnight.message || 'Today’s review batch has already finished.' : 'Queue stopped. Active reviews will finish.')
+  } catch (e) { toast(e.message, true) }
+  finally { S.overnightBusy = false; renderOvernight(); loadOvernight() }
+}
+
 async function loadFullLog(id) {
   try {
     const r = await api(`/api/runs/${id}`)
@@ -1680,6 +1817,7 @@ function showRun(id) {
   if (pr) S.runsOpen[keyOf(pr)] = true
   S.openRun = id
   S.flash = id
+  if (pr && !allPrs().some(p => p.url === pr.url) && S.detail !== keyOf(pr)) openDetail(keyOf(pr))
   renderBoard()
   document.getElementById(`run-${id}`)?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
   setTimeout(() => { S.flash = null; renderRuns() }, 1500)
@@ -1758,7 +1896,7 @@ const perform = (v, pr) => VERBS[v].gh ? ghEach(v, [pr]) : startRun(VERBS[v].run
 async function again(r) {
   if (resumes(r)) return runVerb(r.id, 'retry')
   if (!r.prUrl) return startOverview(r.kind)
-  const pr = allPrs().find(p => p.url === r.prUrl)
+  const pr = prOf(r)
   if (!pr) { toast('That PR is no longer in your list', true); return false }
   const v = Object.keys(VERBS).find(v => VERBS[v].run === r.kind)
   if (VERBS[v]?.confirm) { openDialog({ type: 'confirm', verb: v, k: keyOf(pr) }); return false }
@@ -1864,6 +2002,8 @@ async function runVerb(id, verb, body = {}, done) {
 const ACTIONS = {
   refresh: () => loadPrs(),
   triage: () => startOverview('triage'),
+  'overnight-start': () => overnightAction('start'),
+  'overnight-stop': () => overnightAction('stop'),
   filter: ({ lane }) => {
     S.lane = lane
     for (const key of [...S.seen]) if (key.startsWith('lane:')) S.seen.delete(key)
@@ -2111,8 +2251,15 @@ setInterval(() => { if (!document.hidden) loadPrs() }, 120000)
 setInterval(() => { if (S.data && !S.loading) $('#updated').textContent = `Updated ${ago(S.data.fetchedAt)}` }, 15000)
 
 renderAll()
+window.addEventListener('pr-inbox:open', ({ detail }) => {
+  if (detail?.error) toast(detail.error, true)
+  else openLinkedPr(detail?.url)
+})
+const initialPr = new URLSearchParams(location.search).get('pr')
+if (initialPr) openLinkedPr(initialPr)
 loadPrs()
 loadRuns()
+loadOvernight()
 loadHealth()
 </script>
 </body>

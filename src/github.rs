@@ -100,6 +100,8 @@ pub struct Pr {
     pub number: u64,
     pub title: String,
     pub url: String,
+    /// GitHub's OPEN, CLOSED or MERGED state, including PRs opened directly from another app.
+    pub state: String,
     pub author: String,
     pub is_draft: bool,
     /// Opened from a fork: the head branch lives in another repository than `repo`.
@@ -121,6 +123,8 @@ pub struct Pr {
     /// When the head commit was made; empty when GitHub did not say.
     pub committed_at: String,
     pub base: String,
+    /// The exact target commit used to compare a review with this PR snapshot.
+    pub base_sha: String,
     pub ci: Ci,
     pub failing: Vec<Check>,
     /// Decided when the list is fetched: `classify` for your PRs, Waiting for the rest.
@@ -133,6 +137,8 @@ pub struct Pr {
     pub admin_mergeable: bool,
     /// Your latest review on it, if any. An approval may still leave the PR needing someone else's.
     pub your_review: Option<YourReview>,
+    /// A pending request addressed to you or one of your teams, independently of assignment or lane.
+    pub review_requested: bool,
     /// The Approve run may take this PR: `approve_refusal` has nothing against it.
     pub approvable: bool,
     /// Who has changes requested on it: each reviewer whose latest review asks for changes.
@@ -141,6 +147,8 @@ pub struct Pr {
     pub changes_at: String,
     /// When your latest review was sent; empty when you have not reviewed it.
     pub your_review_at: String,
+    /// The head commit your latest review was made on; empty when you have not reviewed it.
+    pub your_review_sha: String,
     /// When someone last asked you by name to review it; empty when nobody has, or on your own PRs.
     pub asked_at: String,
 }
@@ -192,7 +200,7 @@ impl Pr {
         if !matches!(self.lane, Lane::Waiting | Lane::Reviewed) {
             return Some("Only someone else's PR can be approved");
         }
-        if self.your_review == Some(YourReview::Approved) && self.lane == Lane::Reviewed {
+        if self.your_review == Some(YourReview::Approved) && !self.review_requested {
             return Some("You already approved it, and nobody has asked for your review again");
         }
         None
@@ -221,15 +229,15 @@ impl Snapshot {
 }
 
 const FIELDS: &str = r#"
-  number title url isDraft isCrossRepository createdAt updatedAt additions deletions changedFiles
-  mergeable mergeStateStatus reviewDecision headRefName headRefOid baseRefName
+  number title url state isDraft isCrossRepository createdAt updatedAt additions deletions changedFiles
+  mergeable mergeStateStatus reviewDecision headRefName headRefOid baseRefName baseRefOid
   author { login }
   repository { nameWithOwner name isArchived viewerPermission }
-  reviewRequests(first: 10) { nodes { requestedReviewer { ... on User { login } ... on Team { name } } } }
+  reviewRequests(first: 100) { nodes { requestedReviewer { ... on User { login } ... on Team { name slug organization { login } } } } }
   reviewThreads(first: 100) { nodes { isResolved } }
   labels(first: 20) { nodes { name } }
-  viewerLatestReview { state submittedAt }
-  timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 20) { nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } } } } }
+  viewerLatestReview { state submittedAt commit { oid } }
+  timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 100) { nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } ... on Team { slug organization { login } } } } } }
   latestOpinionatedReviews(first: 20) { nodes { state submittedAt author { login } } }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 100) { nodes {
     __typename
@@ -329,6 +337,7 @@ fn to_pr(n: &Value) -> Pr {
         number: count(n, "number"),
         title: text(n, "/title"),
         url: text(n, "/url"),
+        state: text(n, "/state"),
         author: n.pointer("/author/login").and_then(Value::as_str).unwrap_or("ghost").to_string(),
         is_draft: n["isDraft"] == true,
         is_cross_repo: n["isCrossRepository"] == true,
@@ -351,6 +360,7 @@ fn to_pr(n: &Value) -> Pr {
         head_sha: text(n, "/headRefOid"),
         committed_at: text(n, "/commits/nodes/0/commit/committedDate"),
         base: text(n, "/baseRefName"),
+        base_sha: text(n, "/baseRefOid"),
         ci,
         failing,
         lane: Lane::default(),
@@ -359,10 +369,12 @@ fn to_pr(n: &Value) -> Pr {
         admin_mergeable: false,
         // No review, or a state this binary does not know, reads as None.
         your_review: serde_json::from_value(n["viewerLatestReview"]["state"].clone()).ok(),
+        review_requested: false,
         approvable: false,
         changes_by: Vec::new(),
         changes_at: String::new(),
         your_review_at: text(n, "/viewerLatestReview/submittedAt"),
+        your_review_sha: text(n, "/viewerLatestReview/commit/oid"),
         asked_at: String::new(),
     };
     for r in nodes("/latestOpinionatedReviews/nodes").iter().filter(|r| r["state"] == "CHANGES_REQUESTED") {
@@ -377,6 +389,16 @@ fn to_pr(n: &Value) -> Pr {
 fn asked_at(n: &Value, login: &str) -> String {
     let nodes = n.pointer("/timelineItems/nodes").and_then(Value::as_array).cloned().unwrap_or_default();
     nodes.iter().filter(|e| e.pointer("/requestedReviewer/login").and_then(Value::as_str) == Some(login)).map(|e| text(e, "/createdAt")).max().unwrap_or_default()
+}
+
+fn user_requested(n: &Value, login: &str) -> bool {
+    !login.is_empty() && n.pointer("/reviewRequests/nodes").and_then(Value::as_array).into_iter().flatten()
+        .any(|request| request.pointer("/requestedReviewer/login").and_then(Value::as_str) == Some(login))
+}
+
+fn requested_team(reviewer: &Value, teams: &[Value]) -> bool {
+    reviewer["slug"].is_string() && reviewer["organization"]["login"].is_string()
+        && teams.iter().any(|team| team["slug"] == reviewer["slug"] && team["organization"]["login"] == reviewer["organization"]["login"])
 }
 
 /// Which bucket one of your PRs belongs in: the first rule that matches wins. A PR last updated at or
@@ -436,12 +458,13 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
     // Each PR is listed once, in the first list that has it: a reviewed PR whose review is requested again waits.
     let login = text(doc, "/data/viewer/login");
     let mut seen: HashSet<String> = mine.iter().map(|p| p.url.clone()).collect();
-    let others: Vec<Pr> = [("/data/reviews/nodes", Lane::Waiting), ("/data/assigned/nodes", Lane::Waiting), ("/data/reviewed/nodes", Lane::Reviewed)]
+    let others: Vec<Pr> = [("/data/reviews/nodes", Lane::Waiting, true), ("/data/assigned/nodes", Lane::Waiting, false), ("/data/reviewed/nodes", Lane::Reviewed, false)]
         .iter()
-        .flat_map(|&(ptr, lane)| nodes(ptr).into_iter().map(move |n| (n, lane)))
-        .filter(|(n, _)| live(&n) && n["url"].as_str().is_some_and(|u| seen.insert(u.to_string())))
-        .map(|(n, lane)| {
-            let mut pr = Pr { lane, asked_at: asked_at(&n, &login), ..to_pr(&n) };
+        .flat_map(|&(ptr, lane, requested)| nodes(ptr).into_iter().map(move |n| (n, lane, requested)))
+        .filter(|(n, _, _)| live(&n) && n["url"].as_str().is_some_and(|u| seen.insert(u.to_string())))
+        .map(|(n, lane, requested)| {
+            // GitHub's review-requested search includes team requests. Assignment alone is not a request.
+            let mut pr = Pr { lane, review_requested: requested || user_requested(&n, &login), asked_at: asked_at(&n, &login), ..to_pr(&n) };
             pr.approvable = pr.approve_refusal().is_none();
             pr
         })
@@ -473,6 +496,79 @@ pub async fn fetch_prs() -> Result<Snapshot, String> {
     }
 }
 
+#[derive(Serialize)]
+pub struct LinkedPr {
+    pub login: String,
+    pub pr: Pr,
+}
+
+/// A directly opened PR need not be authored by, assigned to or awaiting review from the viewer.
+fn parse_linked_pr(doc: &Value) -> Result<LinkedPr, String> {
+    if let Some(error) = doc["errors"].as_array().and_then(|errors| errors.first()) {
+        return Err(error["message"].as_str().unwrap_or("GitHub could not load this pull request").into());
+    }
+    let login = text(doc, "/data/viewer/login");
+    let node = &doc["data"]["repository"]["pullRequest"];
+    if login.is_empty() || !node["url"].as_str().is_some_and(is_pr_url) || !matches!(node["state"].as_str(), Some("OPEN" | "CLOSED" | "MERGED")) {
+        return Err("Pull request not found, or your GitHub account cannot access it".into());
+    }
+    let mut pr = to_pr(node);
+    if pr.author == login {
+        let now = now_ms();
+        pr.lane = classify(&pr, &utc_iso(now.saturating_sub(7 * 86_400_000)), &utc_iso(now.saturating_sub(15 * 60_000)));
+        pr.admin_mergeable = pr.admin_merge_refusal().is_none();
+    } else {
+        pr.review_requested = user_requested(node, &login);
+        // The linked fetch adds the viewer's team memberships only when a pending team request exists.
+        let teams = doc["viewerTeams"].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let team_asked_at = node.pointer("/timelineItems/nodes").and_then(Value::as_array).into_iter().flatten()
+            .filter(|event| requested_team(&event["requestedReviewer"], teams))
+            .map(|event| text(event, "/createdAt")).max().unwrap_or_default();
+        let team_pending = node.pointer("/reviewRequests/nodes").and_then(Value::as_array).into_iter().flatten()
+            .any(|request| requested_team(&request["requestedReviewer"], teams));
+        // A team can still be waiting for other members after you approved. Only a later request resets it.
+        pr.review_requested |= team_pending && (pr.your_review != Some(YourReview::Approved)
+            || (!pr.your_review_at.is_empty() && team_asked_at > pr.your_review_at));
+        pr.lane = if pr.your_review.is_some() && !pr.review_requested { Lane::Reviewed } else { Lane::Waiting };
+        pr.asked_at = asked_at(node, &login);
+        if team_pending { pr.asked_at = pr.asked_at.max(team_asked_at); }
+        pr.approvable = pr.approve_refusal().is_none();
+    }
+    if pr.state != "OPEN" || node["repository"]["isArchived"] == true {
+        pr.writable = false;
+        pr.admin_mergeable = false;
+        pr.approvable = false;
+    }
+    Ok(LinkedPr { login, pr })
+}
+
+pub async fn fetch_linked_pr(url: &str) -> Result<LinkedPr, String> {
+    // Keep this check here too: other server callers must not interpolate an unchecked URL into GraphQL.
+    if !is_pr_url(url) {
+        return Err("Not a pull request URL".into());
+    }
+    let parts: Vec<_> = url.trim_start_matches("https://github.com/").split('/').collect();
+    let query = format!("query=query($owner: String!, $repo: String!, $number: Int!) {{ viewer {{ login }} repository(owner: $owner, name: $repo) {{ pullRequest(number: $number) {{ {FIELDS} }} }} }}");
+    let owner = format!("owner={}", parts[0]);
+    let repo = format!("repo={}", parts[1]);
+    let number = format!("number={}", parts[3]);
+    let out = sh("gh", &["api", "graphql", "-f", &query, "-f", &owner, "-f", &repo, "-F", &number], Duration::from_secs(60)).await;
+    if out.code != 0 {
+        return Err(first_line(&out.stderr));
+    }
+    let doc = serde_json::from_str(&out.stdout).map_err(|e| format!("GitHub returned unreadable PR data: {e}"))?;
+    let mut doc: Value = doc;
+    let has_team_request = doc.pointer("/data/repository/pullRequest/reviewRequests/nodes").and_then(Value::as_array).into_iter().flatten()
+        .any(|request| request["requestedReviewer"]["slug"].is_string());
+    if has_team_request {
+        let out = sh("gh", &["api", "user/teams?per_page=100", "--paginate", "--slurp"], Duration::from_secs(60)).await;
+        if out.code != 0 { return Err(format!("Could not check requested team membership: {}", first_line(&out.stderr))); }
+        let pages: Vec<Vec<Value>> = serde_json::from_str(&out.stdout).map_err(|e| format!("GitHub returned unreadable team memberships: {e}"))?;
+        doc["viewerTeams"] = Value::Array(pages.into_iter().flatten().collect());
+    }
+    parse_linked_pr(&doc)
+}
+
 /// The last PR list, shared by the page, the run starter and the morning summary, so a run is always
 /// described by what GitHub says now rather than by what a page fetched minutes ago.
 #[derive(Default)]
@@ -497,14 +593,15 @@ impl Cache {
         }
     }
 
-    /// An open PR as GitHub has it now: from the recent list, or from a fresh one when the recent list
-    /// lacks it. None when it is no longer open.
+    /// An open PR as GitHub has it now: from the recent inbox, or fetched directly when it is outside it.
+    /// Directly opening a PR does not add it to the inbox or any of its bulk actions.
     pub async fn open_pr(&self, url: &str) -> Result<Option<Pr>, String> {
         let snap = self.recent().await?;
         if let Some(pr) = snap.find(url) {
             return Ok(Some(pr.clone()));
         }
-        Ok(self.refresh().await.ok().and_then(|s| s.find(url).cloned()))
+        let linked = fetch_linked_pr(url).await?;
+        Ok((linked.pr.state == "OPEN").then_some(linked.pr))
     }
 }
 
@@ -562,6 +659,111 @@ impl PrAction {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn linked_doc(author: &str, state: &str) -> Value {
+        json!({ "data": { "viewer": { "login": "me" }, "repository": { "pullRequest": {
+            "url": "https://github.com/o/r/pull/7", "number": 7, "title": "A linked PR", "state": state,
+            "author": { "login": author }, "repository": { "nameWithOwner": "o/r", "name": "r", "viewerPermission": "ADMIN" },
+            "headRefName": "feature", "baseRefName": "main", "baseRefOid": "b".repeat(40), "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN"
+        } } } })
+    }
+
+    #[test]
+    fn a_linked_pr_is_classified_without_being_in_the_inbox() {
+        let linked = parse_linked_pr(&linked_doc("me", "OPEN")).unwrap();
+        assert_eq!(linked.login, "me");
+        assert_eq!(linked.pr.repo, "o/r");
+        assert_eq!(linked.pr.number, 7);
+        assert_eq!(linked.pr.base_sha, "b".repeat(40));
+        assert_eq!(linked.pr.lane, Lane::Ready);
+        assert!(linked.pr.writable);
+        assert!(!linked.pr.approvable);
+        let theirs = parse_linked_pr(&linked_doc("someone", "OPEN")).unwrap().pr;
+        assert_eq!(theirs.lane, Lane::Waiting);
+        assert!(theirs.approvable);
+    }
+
+    #[test]
+    fn directly_opened_approval_still_holds_until_a_new_review_request() {
+        let mut doc = linked_doc("someone", "OPEN");
+        doc["data"]["repository"]["pullRequest"]["viewerLatestReview"] = json!({ "state": "APPROVED" });
+        let pr = parse_linked_pr(&doc).unwrap().pr;
+        assert_eq!(pr.lane, Lane::Reviewed);
+        assert!(!pr.approvable);
+        doc["data"]["repository"]["pullRequest"]["reviewRequests"] = json!({ "nodes": [{ "requestedReviewer": { "login": "me" } }] });
+        let pr = parse_linked_pr(&doc).unwrap().pr;
+        assert_eq!(pr.lane, Lane::Waiting);
+        assert!(pr.approvable);
+    }
+
+    #[test]
+    fn assigned_approval_is_not_a_review_request() {
+        let approved = json!({ "url": "https://github.com/o/r/pull/7", "viewerLatestReview": { "state": "APPROVED" } });
+        let mut doc = json!({ "data": { "viewer": { "login": "me", "pullRequests": { "nodes": [] } },
+            "assigned": { "nodes": [approved] }, "reviews": { "nodes": [] }, "reviewed": { "nodes": [] } } });
+        let pr = &parse_snapshot(&doc).unwrap().others[0];
+        assert_eq!(pr.lane, Lane::Waiting);
+        assert!(!pr.review_requested);
+        assert!(!pr.approvable);
+        doc["data"]["assigned"]["nodes"][0]["reviewRequests"] = json!({ "nodes": [{ "requestedReviewer": { "login": "me" } }] });
+        assert!(parse_snapshot(&doc).unwrap().others[0].approvable);
+    }
+
+    #[test]
+    fn a_team_search_request_reopens_approval_without_changing_assignment() {
+        let node = json!({ "url": "https://github.com/o/r/pull/7", "viewerLatestReview": { "state": "APPROVED" },
+            "reviewRequests": { "nodes": [{ "requestedReviewer": { "name": "Data", "slug": "data", "organization": { "login": "o" } } }] } });
+        let doc = json!({ "data": { "viewer": { "login": "me", "pullRequests": { "nodes": [] } },
+            "reviews": { "nodes": [node.clone()] }, "assigned": { "nodes": [node] } } });
+        let snap = parse_snapshot(&doc).unwrap();
+        assert_eq!(snap.others.len(), 1);
+        assert!(snap.others[0].review_requested);
+        assert!(snap.others[0].approvable);
+    }
+
+    #[test]
+    fn linked_team_reapproval_requires_membership_and_a_new_request() {
+        let mut doc = linked_doc("someone", "OPEN");
+        let team = json!({ "name": "Data", "slug": "data", "organization": { "login": "o" } });
+        doc["data"]["repository"]["pullRequest"]["viewerLatestReview"] = json!({ "state": "APPROVED", "submittedAt": "2026-11-01T12:00:00Z" });
+        doc["data"]["repository"]["pullRequest"]["reviewRequests"] = json!({ "nodes": [{ "requestedReviewer": team.clone() }] });
+        doc["data"]["repository"]["pullRequest"]["timelineItems"] = json!({ "nodes": [{ "createdAt": "2026-11-02T12:00:00Z", "requestedReviewer": team.clone() }] });
+        assert!(!parse_linked_pr(&doc).unwrap().pr.approvable, "another team's request cannot reset your approval");
+        doc["viewerTeams"] = json!([team]);
+        let pr = parse_linked_pr(&doc).unwrap().pr;
+        assert_eq!(pr.lane, Lane::Waiting);
+        assert!(pr.review_requested && pr.approvable);
+        assert_eq!(pr.asked_at, "2026-11-02T12:00:00Z");
+        doc["data"]["repository"]["pullRequest"]["timelineItems"]["nodes"][0]["createdAt"] = json!("2026-10-31T12:00:00Z");
+        assert!(!parse_linked_pr(&doc).unwrap().pr.approvable, "a team still waiting for others does not reset your approval");
+        doc["viewerTeams"][0]["organization"]["login"] = json!("another-org");
+        doc["data"]["repository"]["pullRequest"]["timelineItems"]["nodes"][0]["createdAt"] = json!("2026-11-02T12:00:00Z");
+        assert!(!parse_linked_pr(&doc).unwrap().pr.approvable);
+    }
+
+    #[test]
+    fn closed_merged_and_archived_links_do_not_enable_writes_or_approval() {
+        for state in ["CLOSED", "MERGED"] {
+            let pr = parse_linked_pr(&linked_doc("someone", state)).unwrap().pr;
+            assert_eq!(pr.state, state);
+            assert!(!pr.writable && !pr.approvable && !pr.admin_mergeable);
+        }
+        let mut doc = linked_doc("someone", "OPEN");
+        doc["data"]["repository"]["pullRequest"]["repository"]["isArchived"] = json!(true);
+        let pr = parse_linked_pr(&doc).unwrap().pr;
+        assert!(!pr.writable && !pr.approvable && !pr.admin_mergeable);
+    }
+
+    #[test]
+    fn inaccessible_and_partial_linked_pr_responses_fail_explicitly() {
+        assert!(parse_linked_pr(&json!({ "data": { "viewer": { "login": "me" }, "repository": null } })).is_err());
+        let mut doc = linked_doc("me", "OPEN");
+        doc["errors"] = json!([{ "message": "SAML access required" }]);
+        assert_eq!(parse_linked_pr(&doc).err().unwrap(), "SAML access required");
+        let mut doc = linked_doc("me", "OPEN");
+        doc["data"]["viewer"]["login"] = json!("");
+        assert!(parse_linked_pr(&doc).is_err());
+    }
 
     fn run(name: &str, conclusion: &str, completed: &str) -> Value {
         json!({ "__typename": "CheckRun", "name": name, "status": "COMPLETED", "conclusion": conclusion, "completedAt": completed, "detailsUrl": "https://github.com/x" })
@@ -626,6 +828,7 @@ mod tests {
         assert_eq!(got, [(1, Some(YourReview::Approved), true), (2, Some(YourReview::Approved), false), (3, Some(YourReview::Commented), true)]);
         assert_eq!(to_pr(&json!({ "viewerLatestReview": { "state": "CHANGES_REQUESTED" } })).your_review, Some(YourReview::ChangesRequested));
         assert_eq!(to_pr(&json!({ "viewerLatestReview": null })).your_review, None);
+        assert_eq!(to_pr(&json!({ "viewerLatestReview": { "state": "CHANGES_REQUESTED", "commit": { "oid": "abc" } } })).your_review_sha, "abc");
         let asked = to_pr(&json!({ "latestOpinionatedReviews": { "nodes": [
             { "state": "CHANGES_REQUESTED", "submittedAt": "2026-10-30T18:15:07Z", "author": { "login": "a" } },
             { "state": "APPROVED", "submittedAt": "2026-10-31T09:00:00Z", "author": { "login": "b" } },

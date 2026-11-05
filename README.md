@@ -8,6 +8,7 @@ PR Inbox sorts each PR into a lane: Ready to merge, Waiting on you, Fix CI, Chan
 
 - Merge, update a branch, mark a draft ready or close a PR without leaving the app. These go through `gh`.
 - Click a PR to open it in a panel on the right: its description with screenshots, reviews and comments, labels and checks, and the same buttons as its row. Each PR you open gets a tab along the panel's top. The Code tab shows the diff file by file. From the panel you can comment, ask someone to review, or check the PR out in Terminal. J and K step through the list, Esc closes it.
+- Opening a PR also scrolls to its highlighted row on the left. A link or tab clears only filters that hide that PR. PRs outside your inbox appear in a separate selected row and stay out of bulk actions.
 - Search with / : plain words match title, repo, branch, author and labels; `repo:`, `author:` (or `@name`), `label:` and `#123` narrow to one field. Esc clears it.
 - Group the list by status or by repository (press G). Each repository shows its next release and how many commits on its default branch are not released yet.
 - Merge & release squash-merges the Ready PRs of a repo, then cuts one release of it. A repo with a `release.yml` workflow runs that workflow. Any other repo gets a GitHub release one patch above its latest tag (v1.6.0 becomes v1.6.1), with generated notes. A repo with no releases only merges. Each repo also names the open PRs its next release leaves out, and why.
@@ -16,7 +17,14 @@ PR Inbox sorts each PR into a lane: Ready to merge, Waiting on you, Fix CI, Chan
 - Press ⌘R to reload the app; the Refresh button (or R) refreshes just the PR list.
 - Hand a PR to Claude: fix CI, address review comments, rebase, review, or ask anything about it. A lane with several PRs can start one run per PR at once.
 - Reviews, questions and the triage run in Claude Code's plan mode and change nothing. Runs that change code use auto mode in a git worktree of their own (`<clone>/.claude/worktrees/pr-inbox-<number>`), so your checkout stays untouched. PR Inbox removes a clean worktree once its PR is merged or closed.
-- Every morning at 08:00, Claude writes a summary of where to start. "Triage with Claude" writes one on demand.
+- Every morning at 08:00, Claude writes a triage summary of where to start. It reports the PRs as they stand then. Review results arrive later under each PR's run cards. "Triage with Claude" writes a summary on demand.
+- The daily T3 Code task starts a review and fix batch at 08:00 local time. "Run reviews" starts the same daily batch manually. It checks your own open, non-draft, writable PRs with at most two writers at a time and skips current passing reviews with green CI. It never merges or releases. The batch attempts each PR once per calendar day and stops starting new work nine hours after it begins. See [daily review setup and controls](docs/overnight-reviews.md).
+
+GitHub PR links from T3 Code can open directly in PR Inbox through the optional [macOS link router](integrations/t3-link-router/README.md). This requires a Mac without a managed policy that forces another default browser. The router refuses to enable when that policy would cause repeated browser-switch prompts.
+
+A thermo review remains current after a rebase when the reviewed diff is unchanged and CI passes on the new head. Changed code, whitespace, binary files or file modes still invalidate it. Reviews without a recorded PR and base identity remain outdated until they run again.
+
+Thermo review and approval share the policy in `skills/thermo-nuclear-code-quality-review/SKILL.md`. Your PR's repair session fixes and pushes first. Both actions then run a fresh reviewer on a snapshot of the exact PR commits, with only file-reading tools. PR Inbox checks the structured result and current CI before recording PASS or publishing an approval tied to the reviewed commit. Incomplete reviews, stale commits and unknown checks cannot approve. Publication retries reconcile GitHub to avoid duplicate reviews. The installer links the local Claude and Codex skill entry points to one copy of this policy and backs up earlier copies.
 
 ## Requirements
 
@@ -83,5 +91,5 @@ Run history lives in `~/Library/Application Support/PR Inbox` and the server log
 
 - The server log is `~/Library/Logs/PR Inbox.log`. `install.sh` prints its last lines when the server does not start.
 - The same page works in a browser at http://localhost:4477.
-- The "Thermo review" button runs the `/thermo-nuclear-code-quality-review` Claude Code skill. Without that skill installed, the run has nothing to follow.
+- The "Thermo review, fix & push" action uses the review policy bundled with the app. The final reviewer requires a Claude CLI supporting `--restricted`, `--safe-mode`, and `--json-schema`.
 - PRs from forks get read-only runs, because their branch is not on the repo's origin.

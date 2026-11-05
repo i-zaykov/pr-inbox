@@ -12,7 +12,7 @@ const DAY_MS: u64 = 86_400_000;
 
 const TRIAGE: &str = "Here are my open pull requests. Check each one with gh where the line below is not enough (latest CI, review comments, whether it can merge), then put them in priority order (merge, fix, rebase, review, close), one line each with the reason, and say which one to start with. Do not change anything.";
 
-const DIGEST: &str = "Write my morning summary of pull requests. Go through each PR below with gh: read failing CI logs, new review comments, and whether it can merge. Also say what the Claude runs listed below achieved. Do not change, comment on, approve or merge anything.
+const DIGEST: &str = "Write my morning summary of pull requests. Go through each PR below with gh: read failing CI logs, new review comments, and whether it can merge. Also say what the Claude runs listed below achieved. Confirm the current head and its CI before calling a PR ready. A completed Claude run alone is not proof of a passing thermo review. Read the review standings at http://localhost:4477/api/prs with header x-pr-inbox:1, using PR_INBOX_PORT if set. Report reviews that failed, never started or are still running. Do not change, comment on, approve, merge, release or deploy anything.
 
 Format:
 - First line: one sentence on what to do first today.
@@ -73,7 +73,8 @@ fn context(snap: &Snapshot, store: &Store, kind: Kind) -> String {
 
 /// The whole prompt of a triage or morning summary run.
 pub fn prompt(kind: Kind, snap: &Snapshot, store: &Store) -> String {
-    format!("{}\n\n{}", if kind == Kind::Digest { DIGEST } else { TRIAGE }, context(snap, store, kind).trim())
+    let overnight = if kind == Kind::Digest { crate::overnight::summary() } else { String::new() };
+    format!("{}\n\n{}\n{}", if kind == Kind::Digest { DIGEST } else { TRIAGE }, context(snap, store, kind).trim(), overnight)
 }
 
 /// Starts the morning summary once a day: at the set hour, or as soon as the server is up after it.

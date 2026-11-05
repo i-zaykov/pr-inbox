@@ -56,6 +56,17 @@ cat >| "$APP/Contents/Info.plist" <<EOF
 	<string>$NAME</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>$LABEL</string>
+			<key>CFBundleURLSchemes</key>
+			<array><string>pr-inbox</string></array>
+			<key>CFBundleTypeRole</key>
+			<string>Viewer</string>
+		</dict>
+	</array>
 	<key>CFBundleShortVersionString</key>
 	<string>$VERSION</string>
 	<key>CFBundleVersion</key>
@@ -78,6 +89,7 @@ cat >| "$APP/Contents/Info.plist" <<EOF
 EOF
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --deep --sign - "$APP"
+/bin/zsh skills/install-review-skill.zsh
 # Launch Services caches Info.plist; re-register so it picks up the icon, version and LSEnvironment.
 /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$APP"
 echo "3/3 Starting the background server and opening the window"
