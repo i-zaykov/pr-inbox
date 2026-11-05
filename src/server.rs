@@ -11,10 +11,11 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::auto_review::{self, AutoReview};
 use crate::detail;
 use crate::github::{is_pr_url, Cache, PrAction, Snapshot};
 use crate::overview;
@@ -32,6 +33,7 @@ struct App {
     prs: Arc<Cache>,
     releases: Arc<Releases>,
     overnight: Arc<overnight::Batch>,
+    auto: Arc<AutoReview>,
     port: u16,
 }
 
@@ -157,6 +159,55 @@ async fn stop_overnight(State(app): State<Shared>) -> Json<Value> {
     app.overnight.stop();
     app.store.finish_preparation().await;
     Json(app.overnight.status())
+}
+
+async fn auto_status(State(app): State<Shared>) -> Json<Value> {
+    Json(app.auto.status())
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AutoSettingsReq {
+    enabled: Option<bool>,
+    session_limit: Option<i64>,
+    weekly_limit: Option<i64>,
+}
+
+/// Turns the automatic Thermo & approve on or off, or changes the usage limits it starts under.
+async fn auto_settings(State(app): State<Shared>, Json(req): Json<AutoSettingsReq>) -> Response {
+    let limits = auto_review::limit(req.session_limit).and_then(|s| auto_review::limit(req.weekly_limit).map(|w| (s, w)));
+    let (session, weekly) = match limits {
+        Ok(limits) => limits,
+        Err(e) => return err(StatusCode::BAD_REQUEST, e),
+    };
+    match app.auto.configure(req.enabled, session, weekly) {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e),
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkippedReq {
+    #[serde(default)]
+    skipped: BTreeMap<String, String>,
+    #[serde(default)]
+    unskipped: BTreeMap<String, String>,
+    /// `skipped` is the page's whole map, as it sends when it loads.
+    #[serde(default)]
+    complete: bool,
+}
+
+/// Each page keeps Skip in its own storage and sends its changes here, where the automatic run reads them. The
+/// server merges them, so one page never drops another page's choices.
+async fn auto_skipped(State(app): State<Shared>, Json(req): Json<SkippedReq>) -> Response {
+    if let Some(why) = auto_review::skips_refusal(&req.skipped, &req.unskipped) {
+        return err(StatusCode::BAD_REQUEST, why);
+    }
+    match app.auto.take_skips(req.skipped, req.unskipped, req.complete) {
+        Ok(status) => Json(status).into_response(),
+        Err(e) => err(StatusCode::CONFLICT, e),
+    }
 }
 
 #[derive(Deserialize)]
@@ -428,8 +479,8 @@ async fn open_url(Json(req): Json<OpenReq>) -> Response {
     done(sh("open", &[&req.url], Duration::from_secs(10)).await, "Opening the link")
 }
 
-pub fn router(store: Arc<Store>, prs: Arc<Cache>, overnight: Arc<overnight::Batch>, port: u16) -> Router {
-    let app = Arc::new(App { store, prs, overnight, releases: Arc::new(Releases::default()), port });
+pub fn router(store: Arc<Store>, prs: Arc<Cache>, overnight: Arc<overnight::Batch>, auto: Arc<AutoReview>, port: u16) -> Router {
+    let app = Arc::new(App { store, prs, overnight, auto, releases: Arc::new(Releases::default()), port });
     Router::new()
         .route("/", get(index))
         .route("/index.html", get(index))
@@ -439,6 +490,9 @@ pub fn router(store: Arc<Store>, prs: Arc<Cache>, overnight: Arc<overnight::Batc
         .route("/api/overnight", get(overnight_status))
         .route("/api/overnight/start", post(start_overnight))
         .route("/api/overnight/stop", post(stop_overnight))
+        .route("/api/auto-review", get(auto_status))
+        .route("/api/auto-review/settings", post(auto_settings))
+        .route("/api/auto-review/skipped", post(auto_skipped))
         .route("/api/runs/{id}", get(get_run))
         .route("/api/runs/{id}/{verb}", post(run_verb))
         .route("/api/pr-action", post(pr_action))

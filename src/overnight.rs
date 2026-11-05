@@ -9,8 +9,8 @@ use std::time::Duration;
 
 use crate::github::{self, Cache, Ci, Lane, Mergeable, Pr};
 use crate::reviews;
-use crate::runs::{Kind, RunError, Store};
-use crate::util::{data_dir, first_line, local_date, now_ms, sh, write_atomic};
+use crate::runs::{self, Kind, RunError, Store};
+use crate::util::{data_dir, local_date, now_ms, sh, write_atomic};
 
 pub(crate) const INSTRUCTIONS: &str = "This is an authorized daily review and repair pass on my own PR. Fix failing CI and confirmed review findings, commit and push the fixes on this PR's branch, and finish the thermo review. Read unresolved review threads as well as the diff. Make only changes needed by this PR. If intent, access, credentials or a requested decision is unclear, stop and report the blocker. Do not merge the pull request, release, deploy, close, approve or post comments. Do not create or push tags, change branch protection, bypass checks, force-push, or modify any other PR. Bringing the PR branch up to date with its base is allowed. Wait for checks on the final pushed head to finish. Report the final head, CI result and unresolved blockers. Do not record a review verdict. PR Inbox performs an independent final review, verifies checks and records the verdict. Never report the PR ready while its latest checks are pending.";
 
@@ -172,9 +172,9 @@ impl Batch {
             let run = a.run_id.as_ref().and_then(|id| store.get(id).ok()).or_else(|| store.overnight_run(&snapshot.night, url));
             if let Some(run) = run {
                 let mut next = a.clone();
-                next.run_id = run["id"].as_str().map(String::from);
-                next.status = run["status"].as_str().unwrap_or("interrupted").into();
-                next.summary = run["events"].as_array().and_then(|events| events.iter().rev().find(|e| matches!(e["kind"].as_str(), Some("result" | "error")))).and_then(|e| e["text"].as_str()).map(first_line).unwrap_or_else(|| a.summary.clone());
+                let said;
+                (next.run_id, next.status, said) = runs::outcome(&run);
+                next.summary = said.unwrap_or_else(|| a.summary.clone());
                 if next.status != a.status || next.run_id != a.run_id || next.summary != a.summary { updates.push((url.clone(), next)); }
             } else if matches!(a.status.as_str(), "starting" | "queued" | "running") {
                 let mut next = a.clone();
@@ -247,7 +247,7 @@ impl Batch {
         let result = store.create_overnight(kind, pr, INSTRUCTIONS.into(), &before.night, &|| self.allowed(&before.night)).await;
         self.change(|s| match result {
             Ok(run) => {
-                if let Some(a) = s.attempts.get_mut(&url) { a.run_id = run["id"].as_str().map(String::from); a.status = run["status"].as_str().unwrap_or("interrupted").into(); }
+                if let Some(a) = s.attempts.get_mut(&url) { (a.run_id, a.status, _) = runs::outcome(&run); }
             }
             Err(RunError::Busy(reason)) => { s.attempts.remove(&url); s.deferred.insert(url, reason.into()); }
             Err(e) => { if let Some(a) = s.attempts.get_mut(&url) { a.status = "failed".into(); a.summary = format!("Could not start review: {e:?}"); } }

@@ -151,6 +151,10 @@ pub struct Pr {
     pub your_review_sha: String,
     /// When someone last asked you by name to review it; empty when nobody has, or on your own PRs.
     pub asked_at: String,
+    /// In the PR list, when a team still asked to review it was last asked; empty when none is. The list does not
+    /// know your teams, so this may be another team's request. A fresh read of the PR folds your own teams' requests
+    /// into `asked_at` and leaves this empty.
+    pub team_asked_at: String,
     /// When a person other than the author last reviewed or commented on it; bots do not count. Empty when
     /// nobody has.
     pub feedback_at: String,
@@ -381,6 +385,7 @@ fn to_pr(n: &Value) -> Pr {
         your_review_at: text(n, "/viewerLatestReview/submittedAt"),
         your_review_sha: text(n, "/viewerLatestReview/commit/oid"),
         asked_at: String::new(),
+        team_asked_at: String::new(),
         feedback_at: feedback_at(n),
     };
     for r in nodes("/latestOpinionatedReviews/nodes").iter().filter(|r| r["state"] == "CHANGES_REQUESTED") {
@@ -405,6 +410,14 @@ fn feedback_at(n: &Value) -> String {
 fn asked_at(n: &Value, login: &str) -> String {
     let nodes = n.pointer("/timelineItems/nodes").and_then(Value::as_array).cloned().unwrap_or_default();
     nodes.iter().filter(|e| e.pointer("/requestedReviewer/login").and_then(Value::as_str) == Some(login)).map(|e| text(e, "/createdAt")).max().unwrap_or_default()
+}
+
+/// When a team still asked to review the PR in node `n` was last asked; empty when no team is.
+fn team_asked_at(n: &Value) -> String {
+    let pending: Vec<Value> = n.pointer("/reviewRequests/nodes").and_then(Value::as_array).into_iter().flatten().map(|r| r["requestedReviewer"].clone()).collect();
+    n.pointer("/timelineItems/nodes").and_then(Value::as_array).into_iter().flatten()
+        .filter(|event| requested_team(&event["requestedReviewer"], &pending))
+        .map(|event| text(event, "/createdAt")).max().unwrap_or_default()
 }
 
 fn user_requested(n: &Value, login: &str) -> bool {
@@ -480,7 +493,7 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
         .filter(|(n, _, _)| live(&n) && n["url"].as_str().is_some_and(|u| seen.insert(u.to_string())))
         .map(|(n, lane, requested)| {
             // GitHub's review-requested search includes team requests. Assignment alone is not a request.
-            let mut pr = Pr { lane, review_requested: requested || user_requested(&n, &login), asked_at: asked_at(&n, &login), ..to_pr(&n) };
+            let mut pr = Pr { lane, review_requested: requested || user_requested(&n, &login), asked_at: asked_at(&n, &login), team_asked_at: team_asked_at(&n), ..to_pr(&n) };
             pr.approvable = pr.approve_refusal().is_none();
             pr
         })
@@ -601,8 +614,12 @@ impl Cache {
 
     /// The cached list while it is under a minute old, otherwise a fresh one.
     pub async fn recent(&self) -> Result<Snapshot, String> {
-        const MAX_AGE_MS: u64 = 60_000;
-        let cached = self.last.lock().unwrap().clone().filter(|s| now_ms().saturating_sub(s.fetched_at) < MAX_AGE_MS);
+        self.within(60_000).await
+    }
+
+    /// The cached list while it is under `max_age_ms` old, otherwise a fresh one.
+    pub async fn within(&self, max_age_ms: u64) -> Result<Snapshot, String> {
+        let cached = self.last.lock().unwrap().clone().filter(|s| now_ms().saturating_sub(s.fetched_at) < max_age_ms);
         match cached {
             Some(snap) => Ok(snap),
             None => self.refresh().await,
@@ -735,6 +752,20 @@ mod tests {
         assert_eq!(snap.others.len(), 1);
         assert!(snap.others[0].review_requested);
         assert!(snap.others[0].approvable);
+    }
+
+    #[test]
+    fn the_list_dates_the_latest_request_to_a_team_still_asked() {
+        let team = |slug: &str| json!({ "name": slug, "slug": slug, "organization": { "login": "o" } });
+        let node = json!({ "url": "https://github.com/o/r/pull/7",
+            "reviewRequests": { "nodes": [{ "requestedReviewer": team("data") }] },
+            "timelineItems": { "nodes": [
+                { "createdAt": "2026-11-01T00:00:00Z", "requestedReviewer": team("data") },
+                { "createdAt": "2026-11-03T00:00:00Z", "requestedReviewer": team("done") },
+                { "createdAt": "2026-11-02T00:00:00Z", "requestedReviewer": { "login": "someone" } }] } });
+        let doc = json!({ "data": { "viewer": { "login": "me", "pullRequests": { "nodes": [] } }, "reviews": { "nodes": [node] } } });
+        let pr = &parse_snapshot(&doc).unwrap().others[0];
+        assert_eq!((pr.team_asked_at.as_str(), pr.asked_at.as_str()), ("2026-11-01T00:00:00Z", ""), "a team no longer asked does not count");
     }
 
     #[test]

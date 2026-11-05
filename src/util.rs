@@ -52,6 +52,56 @@ pub fn utc_iso(ms: u64) -> String {
     format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec)
 }
 
+/// Milliseconds since the epoch of an RFC 3339 time such as GitHub's `2026-11-05T14:00:00Z` or Anthropic's
+/// `2026-11-05T14:00:00.383538+00:00`. None for anything else.
+pub fn parse_iso(s: &str) -> Option<u64> {
+    let b = s.as_bytes();
+    let num = |at: usize, len: usize| -> Option<i32> { s.get(at..at + len).filter(|p| p.bytes().all(|c| c.is_ascii_digit()))?.parse().ok() };
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    // SAFETY: an all-zero tm is a valid value; every field timegm reads is set below.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    (tm.tm_year, tm.tm_mon, tm.tm_mday) = (num(0, 4)? - 1900, num(5, 2)? - 1, num(8, 2)?);
+    (tm.tm_hour, tm.tm_min, tm.tm_sec) = (num(11, 2)?, num(14, 2)?, num(17, 2)?);
+    if !(0..12).contains(&tm.tm_mon) || !(1..=31).contains(&tm.tm_mday) || tm.tm_hour > 23 || tm.tm_min > 59 || tm.tm_sec > 60 {
+        return None;
+    }
+    let mut rest = &s[19..];
+    let mut ms = 0;
+    if let Some(frac) = rest.strip_prefix('.') {
+        let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        ms = frac[..digits].chars().chain("000".chars()).take(3).collect::<String>().parse().ok()?;
+        rest = &frac[digits..];
+    }
+    let offset = match rest {
+        "Z" | "z" => 0,
+        _ if rest.len() == 6 && matches!(rest.as_bytes()[0], b'+' | b'-') && rest.as_bytes()[3] == b':' => {
+            let at = s.len() - 6;
+            let minutes = i64::from(num(at + 1, 2)? * 60 + num(at + 4, 2)?);
+            if rest.starts_with('+') { minutes } else { -minutes }
+        }
+        _ => return None,
+    };
+    // SAFETY: timegm reads the calendar value we own and keeps no reference to it.
+    let secs: i64 = unsafe { libc::timegm(&mut tm) };
+    u64::try_from((secs - offset * 60) * 1000 + ms).ok()
+}
+
+/// A local time of day, "15:00", with the weekday in front when it falls on another day than `now`: "Sun 06:00".
+pub fn local_clock(ms: u64, now: u64) -> String {
+    let tm = local_tm((ms / 1000) as i64);
+    let time = format!("{:02}:{:02}", tm.tm_hour, tm.tm_min);
+    if local_date(ms) == local_date(now) {
+        return time;
+    }
+    let day = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].get(tm.tm_wday as usize).copied().unwrap_or("");
+    format!("{day} {time}")
+}
+
 /// The string serde gives a unit enum variant, such as "CHANGES_REQUESTED" for a review decision.
 pub fn serde_name<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_value(v).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
@@ -123,7 +173,11 @@ pub struct Output {
 pub async fn output(mut c: tokio::process::Command, timeout: Duration) -> Output {
     let program = c.as_std().get_program().to_string_lossy().to_string();
     c.kill_on_drop(true);
-    match tokio::time::timeout(timeout, c.output()).await {
+    ended(&program, tokio::time::timeout(timeout, c.output()).await)
+}
+
+fn ended(program: &str, result: Result<std::io::Result<std::process::Output>, tokio::time::error::Elapsed>) -> Output {
+    match result {
         Ok(Ok(o)) => Output {
             code: o.status.code().unwrap_or(1),
             stdout: String::from_utf8_lossy(&o.stdout).to_string(),
@@ -138,6 +192,22 @@ pub async fn sh(cmd: &str, args: &[&str], timeout: Duration) -> Output {
     let mut c = tokio::process::Command::new(cmd);
     c.args(args);
     output(c, timeout).await
+}
+
+/// `sh` with `input` written to the command's stdin, for a secret that must stay out of its argv, where any
+/// local process can read it.
+pub async fn sh_input(cmd: &str, args: &[&str], input: &[u8], timeout: Duration) -> Output {
+    use tokio::io::AsyncWriteExt;
+    let mut c = tokio::process::Command::new(cmd);
+    c.args(args).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).kill_on_drop(true);
+    let run = async {
+        let mut child = c.spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(input).await?;
+        }
+        child.wait_with_output().await
+    };
+    ended(cmd, tokio::time::timeout(timeout, run).await)
 }
 
 pub fn shq(s: &str) -> String {
@@ -195,5 +265,34 @@ mod tests {
     fn utc_iso_matches_githubs_timestamps() {
         assert_eq!(utc_iso(0), "1970-01-01T00:00:00Z");
         assert_eq!(utc_iso(1_791_372_605_999), "2026-10-07T11:30:05Z");
+    }
+
+    #[test]
+    fn parse_iso_reads_github_and_anthropic_times() {
+        assert_eq!(parse_iso("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_iso("2026-10-07T11:30:05Z"), Some(1_791_372_605_000));
+        assert_eq!(parse_iso("2026-10-07T11:30:05.999Z"), Some(1_791_372_605_999));
+        assert_eq!(parse_iso("2026-10-07T11:30:05.9Z"), Some(1_791_372_605_900));
+        assert_eq!(parse_iso("2026-11-05T14:00:00.383538+00:00"), parse_iso("2026-11-05T14:00:00.383Z"));
+        assert_eq!(parse_iso("2026-11-05T15:00:00+01:00"), parse_iso("2026-11-05T14:00:00Z"));
+        assert_eq!(parse_iso("2026-11-05T09:30:00-04:30"), parse_iso("2026-11-05T14:00:00Z"));
+        assert_eq!(parse_iso("2024-02-29T00:00:00Z").map(utc_iso), Some("2024-02-29T00:00:00Z".into()));
+        for bad in ["", "2026-11-05", "2026-11-05T14:00:00", "2026-13-05T14:00:00Z", "2026-11-05T14:00:00+0100", "2026-11-05T14:00:00.Z", "garbage-in-garbage-out", "2026-11-05T14:00:00Zjunk", "1969-12-31T23:59:59Z"] {
+            assert_eq!(parse_iso(bad), None, "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_reset_on_another_day_names_the_weekday() {
+        let now = parse_iso("2026-11-05T12:00:00Z").unwrap();
+        assert_eq!(local_clock(now, now).len(), 5);
+        let later = local_clock(now + 3 * 86_400_000, now);
+        assert!(["Sun ", "Mon "].iter().any(|d| later.starts_with(d)), "{later}");
+    }
+
+    #[tokio::test]
+    async fn input_reaches_the_command_on_stdin_only() {
+        let out = sh_input("cat", &[], b"Authorization: Bearer secret\n", Duration::from_secs(5)).await;
+        assert_eq!((out.code, out.stdout.as_str()), (0, "Authorization: Bearer secret\n"));
     }
 }

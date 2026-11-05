@@ -202,6 +202,8 @@ pub struct Run {
     pr_url: Option<String>,
     /// The overnight batch that dispatched this run, for recovery after a server restart.
     overnight: Option<String>,
+    /// Started by the automatic Thermo & approve, not by a click, so its card can say so.
+    auto: bool,
     cwd: String,
     /// Where Claude's session runs, from its init event; set means the session exists and can resume.
     session_cwd: Option<String>,
@@ -658,6 +660,14 @@ impl Run {
     }
 }
 
+/// Where a run stands, for the batches that follow the runs they started: its id, its status, and the first line
+/// of its last result or error, if it has one.
+pub fn outcome(run: &Value) -> (Option<String>, String, Option<String>) {
+    let said = run["events"].as_array().and_then(|events| events.iter().rev().find(|e| matches!(e["kind"].as_str(), Some("result" | "error"))))
+        .and_then(|e| e["text"].as_str()).map(first_line);
+    (run["id"].as_str().map(String::from), run["status"].as_str().unwrap_or("interrupted").into(), said)
+}
+
 // ---------- persistence ----------
 
 /// Parses runs.json one record at a time, so one record an older or newer binary cannot read does not
@@ -813,24 +823,16 @@ impl Inner {
         self.save();
     }
 
-    /// Adds a new run to the queue and returns it as the page shows it.
-    fn insert(&mut self, kind: Kind, title: String, pr_url: Option<String>, cwd: String, prompt: String, overnight: Option<String>) -> Value {
+    /// Adds a new run to the queue and returns it as the page shows it. `run` carries what the caller decides: the
+    /// kind, title, PR, directory, prompt and who started it; the rest is set here.
+    fn insert(&mut self, mut run: Run) -> Value {
         let id = uuid::Uuid::new_v4().simple().to_string()[..8].to_string();
-        let mut run = Run {
-            id: id.clone(),
-            kind,
-            mode: kind.mode(),
-            title,
-            pr_url,
-            overnight,
-            cwd,
-            started_at: now_ms(),
-            updated_at: now_ms(),
-            prompt: prompt.clone(),
-            review_job: matches!(kind, Kind::Thermo | Kind::Resolve | Kind::Approve).then(|| Job::new(kind == Kind::Approve)),
-            ..Default::default()
-        };
-        run.enqueue(Pending { prompt });
+        let kind = run.kind;
+        run.id = id.clone();
+        run.mode = kind.mode();
+        (run.started_at, run.updated_at) = (now_ms(), now_ms());
+        run.review_job = matches!(kind, Kind::Thermo | Kind::Resolve | Kind::Approve).then(|| Job::new(kind == Kind::Approve));
+        run.enqueue(Pending { prompt: run.prompt.clone() });
         self.runs.push(run);
         self.commit();
         self.view(&id)
@@ -852,6 +854,21 @@ impl Store {
         let active = runs.iter().filter(|r| r.status.active()).filter_map(|r| r.review_job.as_ref()?.prepared.as_ref().map(|p| p.dir.clone())).collect();
         review_flow::prune_snapshots(&active);
         Store { inner: Mutex::new(Inner { runs, overnight_limit: false, dirty: false, urgent: false, last_save: Instant::now() }), preparing: tokio::sync::Mutex::new(()) }
+    }
+
+    #[cfg(test)]
+    pub fn empty() -> Store {
+        Store { inner: Mutex::new(Inner { runs: Vec::new(), overnight_limit: false, dirty: false, urgent: false, last_save: Instant::now() }), preparing: tokio::sync::Mutex::new(()) }
+    }
+
+    /// A store holding one Approve run on `pr_url`, for tests of the modules that follow runs.
+    #[cfg(test)]
+    pub fn with_approve(id: &str, pr_url: &str, started_at: u64, status: Status, result: &str) -> Store {
+        let store = Store::empty();
+        let mut run = Run { id: id.into(), kind: Kind::Approve, pr_url: Some(pr_url.into()), started_at, status, ..Default::default() };
+        run.push(EventKind::Result, result);
+        store.inner.lock().unwrap().runs.push(run);
+        store
     }
 
     pub fn list(&self) -> Value {
@@ -971,6 +988,30 @@ impl Store {
         self.inner.lock().unwrap().runs.iter().any(|r| r.status.active() && r.exclusive() && r.pr_url.as_deref() == Some(pr_url))
     }
 
+    /// Any run is queued or running on this PR, reading or writing.
+    pub fn busy_on(&self, pr_url: &str) -> bool {
+        self.inner.lock().unwrap().runs.iter().any(|r| r.status.active() && r.pr_url.as_deref() == Some(pr_url))
+    }
+
+    /// An Approve run on this PR prepared a review of the head `head_sha`, so the automatic start never repeats a
+    /// click on the same head. A run that ended before preparing never reviewed anything, and one still queued
+    /// counts through `busy_on`.
+    pub fn approved_head(&self, pr_url: &str, head_sha: &str) -> bool {
+        self.inner.lock().unwrap().runs.iter().filter(|r| r.kind == Kind::Approve && r.pr_url.as_deref() == Some(pr_url))
+            .any(|r| r.review_job.as_ref().and_then(|j| j.prepared.as_ref()).is_some_and(|p| p.scope.head_sha == head_sha))
+    }
+
+    fn approving(&self, pr_url: &str) -> bool {
+        self.inner.lock().unwrap().runs.iter().any(|r| r.kind == Kind::Approve && r.status.active() && r.pr_url.as_deref() == Some(pr_url))
+    }
+
+    /// The newest Approve run on this PR started at or after `since`: an automatic start whose run id was never
+    /// saved because the server stopped in between.
+    pub fn approve_run_since(&self, pr_url: &str, since: u64) -> Option<Value> {
+        let g = self.inner.lock().unwrap();
+        g.runs.iter().filter(|r| r.kind == Kind::Approve && r.pr_url.as_deref() == Some(pr_url) && r.started_at >= since).max_by_key(|r| r.started_at).map(Run::summary)
+    }
+
     pub fn active_writers(&self) -> usize {
         self.inner.lock().unwrap().writing(true)
     }
@@ -991,7 +1032,22 @@ impl Store {
     /// Starts a run on one PR, as GitHub has it now. A writing run gets the PR's own worktree.
     pub async fn create_pr(&self, kind: Kind, pr: Pr, note: String) -> Result<Value, RunError> {
         let _preparing = self.preparing.lock().await;
-        self.prepare_pr(kind, pr, note, None).await
+        // A second review of the same head could publish the opposite verdict from your account. The automatic
+        // start creates under this lock too, so a click that lands just after it is refused here.
+        if kind == Kind::Approve && self.approving(&pr.url) {
+            return Err(RunError::Busy("Thermo & approve is already running on this PR"));
+        }
+        self.prepare_pr(kind, pr, note, None, false).await
+    }
+
+    /// The automatic Thermo & approve: the run the button starts, marked as started automatically.
+    pub async fn create_auto(&self, pr: Pr) -> Result<Value, RunError> {
+        let _preparing = self.preparing.lock().await;
+        // Clicks create under the same lock, so a run clicked on this PR meanwhile is seen here.
+        if self.busy_on(&pr.url) {
+            return Err(RunError::Busy("Another Claude run started on this PR"));
+        }
+        self.prepare_pr(Kind::Approve, pr, String::new(), None, true).await
     }
 
     /// A fresh overnight start never queues behind another writer. Recheck after the worktree's I/O,
@@ -999,10 +1055,10 @@ impl Store {
     pub async fn create_overnight(&self, kind: Kind, pr: Pr, note: String, night: &str, allowed: &(dyn Fn() -> bool + Sync)) -> Result<Value, RunError> {
         if !matches!(kind, Kind::Thermo | Kind::Resolve) { return Err(RunError::Invalid("Only review and repair runs are allowed in this batch".into())) }
         let _preparing = self.preparing.lock().await;
-        self.prepare_pr(kind, pr, note, Some((night, allowed))).await
+        self.prepare_pr(kind, pr, note, Some((night, allowed)), false).await
     }
 
-    async fn prepare_pr(&self, kind: Kind, pr: Pr, note: String, overnight: Option<(&str, &(dyn Fn() -> bool + Sync))>) -> Result<Value, RunError> {
+    async fn prepare_pr(&self, kind: Kind, pr: Pr, note: String, overnight: Option<(&str, &(dyn Fn() -> bool + Sync))>, auto: bool) -> Result<Value, RunError> {
         if let Some((_, allowed)) = overnight {
             if !allowed() { return Err(RunError::Busy("Review batch dispatch stopped")) }
             if self.writer_on(&pr.url) || self.active_writers() >= 2 { return Err(RunError::Busy("Another writing run has this PR or both review batch slots")) }
@@ -1045,7 +1101,7 @@ impl Store {
                 return Err(RunError::Busy("Another writing run has this PR or both review batch slots"));
             }
         }
-        Ok(g.insert(kind, title, Some(pr.url), cwd, prompt, overnight.map(|(night, _)| night.to_string())))
+        Ok(g.insert(Run { kind, title, pr_url: Some(pr.url), cwd, prompt, overnight: overnight.map(|(night, _)| night.to_string()), auto, ..Default::default() }))
     }
 
     /// Starts a triage or morning summary over every PR, from a prompt the overview module builds.
@@ -1054,7 +1110,7 @@ impl Store {
             return Err(RunError::Invalid("A pull request is required".into()));
         }
         let title = if kind == Kind::Digest { format!("{} · {}", Kind::Digest.title(), local_date(now_ms())) } else { kind.title().into() };
-        Ok(self.inner.lock().unwrap().insert(kind, title, None, checkouts_dir().display().to_string(), prompt, None))
+        Ok(self.inner.lock().unwrap().insert(Run { kind, title, cwd: checkouts_dir().display().to_string(), prompt, ..Default::default() }))
     }
 
     /// Sends a follow-up, or with no text picks the session back up where it stopped.
@@ -1369,6 +1425,70 @@ mod tests {
         let store = Store { inner: Mutex::new(Inner { runs: vec![legacy, tagged], overnight_limit: false, dirty: false, urgent: false, last_save: Instant::now() }), preparing: tokio::sync::Mutex::new(()) };
         assert_eq!(store.overnight_run("2026-11-03", "pr/1").unwrap()["id"], "overnight");
         assert!(store.overnight_run("2026-11-04", "pr/1").is_none());
+    }
+
+    #[test]
+    fn a_clicked_approval_covers_only_the_head_it_prepared() {
+        let url = "https://github.com/o/r/pull/7";
+        let prepared = |head: &str| {
+            let mut job = Job::new(true);
+            let scope = crate::reviews::ReviewScope { repo: "o/r".into(), number: 7, branch: "feat".into(), base: "main".into(), base_sha: "a".repeat(40), head_sha: head.into() };
+            job.prepared = Some(review_flow::Prepared { scope, dir: PathBuf::from("/snapshot") });
+            job
+        };
+        let approve = |id: &str, started_at: u64, job: Option<Job>, status: Status| Run { id: id.into(), kind: Kind::Approve, pr_url: Some(url.into()), started_at, review_job: job, status, ..Default::default() };
+        let store = |runs| Store { inner: Mutex::new(Inner { runs, overnight_limit: false, dirty: false, urgent: false, last_save: Instant::now() }), preparing: tokio::sync::Mutex::new(()) };
+        let (old, new) = ("b".repeat(40), "c".repeat(40));
+        let s = store(vec![approve("done", 500, Some(prepared(&old)), Status::Done)]);
+        assert!(s.approved_head(url, &old));
+        assert!(!s.approved_head(url, &new), "a snapshot of another commit does not cover this head");
+        assert!(!s.approved_head("https://github.com/o/r/pull/8", &old));
+        assert!(!s.busy_on(url));
+        let s = store(vec![approve("failed", 500, Some(Job::new(true)), Status::Failed)]);
+        assert!(!s.approved_head(url, &new), "a run that failed before preparing reviewed nothing");
+        let s = store(vec![approve("queued", 500, Some(Job::new(true)), Status::Queued)]);
+        assert!(!s.approved_head(url, &new));
+        assert!(s.busy_on(url), "a queued run holds the PR instead");
+        assert_eq!(s.approve_run_since(url, 500).unwrap()["id"], "queued");
+        assert!(s.approve_run_since(url, 501).is_none());
+        let reader = Run { id: "ask".into(), kind: Kind::Ask, pr_url: Some(url.into()), status: Status::Running, ..Default::default() };
+        assert!(store(vec![reader]).busy_on(url), "a read-only run on the PR counts too");
+    }
+
+    #[tokio::test]
+    async fn an_automatic_start_yields_to_a_run_clicked_on_the_same_pr() {
+        let url = "https://github.com/o/r/pull/7";
+        let store = Store::empty();
+        store.inner.lock().unwrap().runs.push(Run { kind: Kind::Approve, status: Status::Queued, pr_url: Some(url.into()), ..Default::default() });
+        let pr = Pr { url: url.into(), lane: crate::github::Lane::Waiting, ..Default::default() };
+        assert!(matches!(store.create_auto(pr).await, Err(RunError::Busy(_))));
+        assert_eq!(store.inner.lock().unwrap().runs.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_click_cannot_add_a_second_approval_run_to_the_same_pr() {
+        let url = "https://github.com/o/r/pull/7";
+        let store = Store::with_approve("auto", url, 5, Status::Running, "");
+        let pr = Pr { url: url.into(), lane: crate::github::Lane::Waiting, ..Default::default() };
+        assert!(matches!(store.create_pr(Kind::Approve, pr, String::new()).await, Err(RunError::Busy(_))));
+        assert_eq!(store.inner.lock().unwrap().runs.len(), 1);
+    }
+
+    #[test]
+    fn outcome_reads_the_id_status_and_last_result_line() {
+        let url = "https://github.com/o/r/pull/7";
+        let run = Store::with_approve("a", url, 5, Status::Done, "PASS: approved\nmore").get("a").unwrap();
+        assert_eq!(outcome(&run), (Some("a".into()), "done".into(), Some("PASS: approved".into())));
+        assert_eq!(outcome(&serde_json::json!({})), (None, "interrupted".into(), None));
+    }
+
+    #[test]
+    fn runs_saved_before_automatic_starts_read_as_clicked() {
+        let (runs, skipped) = parse_runs(r#"[{"id":"a","kind":"approve","status":"done"}]"#).unwrap();
+        assert_eq!(skipped, 0);
+        assert!(!runs[0].auto);
+        let shown = Run { auto: true, ..run() }.summary();
+        assert_eq!(shown["auto"], true);
     }
 
     #[test]

@@ -4,6 +4,7 @@
 //   PR Inbox.app          opens the window (starts the server inside the app)
 //   pr-inbox --server     runs only the server, for a browser at http://localhost:4477
 //   pr-inbox record-review --repo o/r --branch b --sha s --verdict pass|fail [--summary text]
+mod auto_review;
 mod detail;
 mod deep_link;
 mod github;
@@ -14,6 +15,7 @@ mod reviews;
 mod review_flow;
 mod runs;
 mod server;
+mod usage;
 mod util;
 mod workspace;
 
@@ -48,12 +50,14 @@ fn main() {
             let prs = Arc::new(github::Cache::default());
             let overnight = Arc::new(overnight::Batch::load());
             store.set_overnight_limit(overnight.active());
-            let app = server::router(store.clone(), prs.clone(), overnight.clone(), port);
+            let auto = Arc::new(auto_review::AutoReview::load());
+            let app = server::router(store.clone(), prs.clone(), overnight.clone(), auto.clone(), port);
             runtime.spawn(async move {
                 let _ = axum::serve(listener, app).await;
             });
             runtime.spawn(runs::ticker(store.clone()));
             runtime.spawn(overnight::worker(overnight, store.clone(), prs.clone()));
+            runtime.spawn(auto_review::worker(auto, store.clone(), prs.clone()));
             runtime.spawn(overview::morning_loop(store, prs));
             eprintln!("PR Inbox is serving http://localhost:{port}");
         }

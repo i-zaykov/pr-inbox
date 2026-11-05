@@ -138,6 +138,11 @@ button.state:hover { color: #fff; }
 .notice-box { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 10px 16px; border-radius: 10px; border: 1px solid oklch(0.82 0.12 75 / .4); background: oklch(0.82 0.12 75 / .10); }
 .notice-box > svg { color: var(--warn-ink); }
 .notice-text { flex: 1 1 320px; }
+/* A standing status line rather than a warning. */
+.notice-box.quiet { border-color: var(--line-strong); background: var(--panel); }
+.limit { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--sub); }
+.select { height: 28px; padding: 0 6px; font: inherit; font-size: 12px; color: var(--text); background: var(--bg); border: 1px solid var(--line-strong); border-radius: 8px; }
+.select:disabled { opacity: .45; }
 
 /* board */
 .board { padding-top: 20px; padding-bottom: 48px; display: flex; flex-direction: column; gap: 24px; }
@@ -420,6 +425,7 @@ body.resizing { cursor: col-resize; user-select: none; }
     <span class="dim updated" id="updated"></span>
     <button class="btn" id="refresh-btn" data-act="refresh" title="Refresh the PRs (⌘R reloads the app)"><span data-icon="refresh"></span>Refresh</button>
     <button class="btn" id="overnight-btn" data-act="overnight-start" title="Review your eligible PRs with up to two writers at once. Fixes and pushes changes, checks CI, never merges or releases. Stops starting new work nine hours after the batch starts.">Run reviews</button>
+    <button class="btn" id="auto-btn" data-act="auto-toggle" aria-pressed="false" disabled title="When someone asks for your review after Auto thermo is turned on, the PR's checks pass, and your Claude session and weekly usage are below the limits you set, PR Inbox starts Thermo &amp; approve on it by itself. It publishes like the button: an approval, or a request for changes, from your account. One at a time. PRs that were already waiting stay as they are.">Auto thermo</button>
     <button class="btn btn-primary" data-act="triage"><span data-icon="sparkle"></span>Triage with Claude</button>
   </div>
   <div class="wrap filters" id="filters"></div>
@@ -427,6 +433,7 @@ body.resizing { cursor: col-resize; user-select: none; }
 </header>
 <div id="notice"></div>
 <div id="overnight"></div>
+<div id="auto"></div>
 <main class="wrap board" id="board"></main>
 <aside class="detail" id="detail" hidden aria-label="Pull request"></aside>
 <div class="detail-grip" id="detail-grip" role="separator" aria-orientation="vertical" aria-label="Resize the PR panel" title="Drag to resize, double-click to reset"></div>
@@ -541,6 +548,8 @@ const remember = (key, value) => { try { localStorage.setItem(`pr-inbox:${key}`,
 const S = {
   inApp: new URLSearchParams(location.search).has('app'),
   data: null, runs: [], health: null, overnight: null, overnightBusy: false, loading: false, error: null,
+  // The automatic Thermo & approve's status from /api/auto-review, and whether a settings change is on its way.
+  auto: null, autoBusy: false,
   // How each of your repos releases (from /api/releases), why one could not be checked, and releases in flight.
   plans: {}, planErrors: {}, releasing: {},
   group: recall('group') === 'repo' ? 'repo' : 'lane', show: recall('show') === 'needs' ? 'needs' : 'all', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
@@ -854,6 +863,8 @@ function tags(pr, lane, byRepo) {
   else if (askedAgain(pr)) tag(`↻ Asked again ${ago(Date.parse(pr.askedAt))}`, 'tag-info',
     pr.yourReviewAt && pr.askedAt > pr.yourReviewAt ? 'Your review was requested again after you reviewed it' : 'Your review was requested again after a reviewer asked for changes')
   else if (pushedSince(pr)) tag('↻ Pushed since your review', 'tag-info', `You asked for changes on ${pr.yourReviewSha.slice(0, 7)}; the head is now ${pr.headSha.slice(0, 7)}`)
+  const next = autoNext(pr)
+  if (next) tag('Auto thermo next', 'tag-info', `Auto thermo will start Thermo & approve here. ${next}.`)
   const approved = pr.yourReview === 'APPROVED'
   if (approved) tag('✓ You approved', 'tag-ok')
   if (pr.review === 'REVIEW_REQUIRED') tag(approved ? 'Needs another approval' : 'Needs approval', 'tag-mute')
@@ -981,7 +992,7 @@ function strip(pr) {
   const toggle = `<button class="btn btn-sm btn-ghost strip-toggle" ${inInbox ? 'data-act="runs-toggle"' : `data-act="show-run" data-run="${esc(runs[0].id)}"`} aria-expanded="${open}">${icon('chevron', 14)}<b>${plural(runs.length, 'run')}</b></button>`
   if (open) return `<div class="strip">${toggle}${retry}</div><div class="strip-runs">${runs.map(runCard).join('')}</div>`
   const r = runs[0]
-  const text = active(r) ? `${KIND[r.kind]?.[0] || 'Claude working'} · started ${ago(r.startedAt)}` : `${runName(r)} ${r.status} ${ago(r.endedAt || r.startedAt)}`
+  const text = active(r) ? `${KIND[r.kind]?.[0] || 'Claude working'} · started ${r.auto ? 'automatically ' : ''}${ago(r.startedAt)}` : `${runName(r)} ${r.status} ${ago(r.endedAt || r.startedAt)}`
   return `<div class="strip">${toggle}<button class="chip${active(r) ? ' working' : ''}" data-act="show-run" data-run="${esc(r.id)}" title="${esc(r.title)}"><span class="dot" style="--dot:${RUN_DOT[r.status] || 'var(--mute)'}"></span><span class="t">${esc(text)}</span></button>${retry}</div>`
 }
 
@@ -1473,7 +1484,7 @@ function runCard(r) {
   // Claude Code reports an API-price estimate on every run; it is only money spent when the run used an API key.
   const billed = r.costUsd && r.apiKeySource && r.apiKeySource !== 'none' ? `$${r.costUsd.toFixed(2)} API` : ''
   const status = active(r) && r.stopRequested ? 'stopping' : r.status
-  const meta = [status, dur((r.endedAt || Date.now()) - r.startedAt), billed, `${r.mode} mode`].filter(Boolean).join(' · ')
+  const meta = [status, dur((r.endedAt || Date.now()) - r.startedAt), billed, `${r.mode} mode`, r.auto ? 'started automatically' : ''].filter(Boolean).join(' · ')
   let body = ''
   // Collapsed cards say what the run is doing now (and how recently it moved), or what it said last.
   const said = lastSaid(r)
@@ -1801,6 +1812,105 @@ async function overnightAction(verb) {
   finally { S.overnightBusy = false; renderOvernight(); loadOvernight() }
 }
 
+// ---------- automatic Thermo & approve ----------
+
+// A time of day, with the weekday in front when it is not today.
+function clock(ms, now = Date.now()) {
+  const d = new Date(ms)
+  const time = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+  return d.toDateString() === new Date(now).toDateString() ? time : `${d.toLocaleDateString([], { weekday: 'short' })} ${time}`
+}
+
+// The automatic run in one line: on or off, the usage it starts under, and what it did or waits for.
+function autoLine(a, now = Date.now()) {
+  const s = a.settings
+  if (!s.enabled) return 'Off. New requests for your review do not start a review by themselves.'
+  const u = a.usage
+  // Usage is read only when a PR is ready to start, so an old reading says when it was taken.
+  const usage = u && !a.usageError ? `Session ${Math.round(u.session)}% of ${s.sessionLimit}%${u.sessionResetsAt ? `, resets ${clock(u.sessionResetsAt, now)}` : ''}`
+    + ` · weekly ${Math.round(u.weekly)}% of ${s.weeklyLimit}%${now - u.fetchedAt > 600000 ? ` · read at ${clock(u.fetchedAt, now)}` : ''}` : ''
+  return ['On', usage, a.message].filter(Boolean).join(' · ')
+}
+
+// Why the automatic run has not started this PR yet, when it will pick it up; null when it will not.
+const autoNext = pr => S.auto?.settings.enabled && !skipped(pr) && !runFor(pr) ? S.auto.waiting?.[pr.url] || null : null
+
+const LIMITS = { sessionLimit: [50, 60, 70, 80, 85, 90], weeklyLimit: [70, 80, 90, 95] }
+let autoHtml = ''
+function renderAuto() {
+  const a = S.auto
+  const on = !!a?.settings.enabled
+  const button = $('#auto-btn')
+  button.textContent = `Auto thermo: ${on ? 'on' : 'off'}`
+  button.setAttribute('aria-pressed', on)
+  button.disabled = !a || S.autoBusy
+  const pick = (key, label, tip) => {
+    const now = a.settings[key]
+    const options = [...new Set([...LIMITS[key], now])].sort((x, y) => x - y)
+    return `<label class="limit" title="${tip}">${label}<select class="select" data-act="auto-limit" data-key="${key}"${S.autoBusy ? ' disabled' : ''}>${options.map(n => `<option value="${n}"${n === now ? ' selected' : ''}>${n}%</option>`).join('')}</select></label>`
+  }
+  const limits = on ? pick('sessionLimit', 'Session below', 'Starts only while your five-hour Claude session is below this') + pick('weeklyLimit', 'Weekly below', 'Starts only while every weekly Claude limit is below this') : ''
+  const html = !a ? '' : `<div class="wrap notice"><div class="notice-box quiet" role="status"><div class="notice-text"><strong>Auto thermo</strong> <span class="sub">${esc(autoLine(a))}</span>${a.error ? `<div class="sub">${esc(a.error)}</div>` : ''}</div>${limits}</div></div>`
+  // Redrawing an open select would close it, so the line is only replaced when it changed.
+  if (html !== autoHtml) $('#auto').innerHTML = autoHtml = html
+}
+
+let autoTimer = null
+let skipsSent = false
+async function loadAuto() {
+  clearTimeout(autoTimer)
+  try {
+    const before = S.auto
+    S.auto = await api('/api/auto-review')
+    renderAuto()
+    if (JSON.stringify(S.auto.waiting || {}) !== JSON.stringify(before?.waiting || {})) renderBoard()
+    // An automatic start replaces the row's buttons with its run now, not on the next runs poll.
+    if (S.auto.running && S.auto.running !== before?.running) loadRuns()
+    // Once per page load, and again whenever the server lost its copy, this page sends its whole Skip map. The
+    // server keeps the later choice for each PR from every page, and this page takes the result.
+    if (!skipsSent || !S.auto.skipsSynced) {
+      skipsSent = true
+      if (await sendSkips({ skipped: skippedAt(), complete: true })) {
+        remember('skipped', JSON.stringify(S.auto.skipped || {}))
+        renderHeader()
+      }
+    }
+  } catch {}
+  autoTimer = setTimeout(loadAuto, S.auto?.running ? 5000 : 30000)
+}
+
+// The automatic run honours Skip too, so every page sends its Skip changes to the server's copy. `loud` says when
+// the server did not take one.
+async function sendSkips(change, loud = false) {
+  try {
+    S.auto = await api('/api/auto-review/skipped', change)
+    renderAuto()
+    renderBoard()
+    return true
+  } catch (e) {
+    if (loud) toast(`Auto thermo did not get your Skip: ${e.message}`, true)
+    return false
+  }
+}
+
+async function autoSettings(change) {
+  if (S.autoBusy) return
+  S.autoBusy = true
+  renderAuto()
+  try {
+    S.auto = await api('/api/auto-review/settings', change)
+    if ('enabled' in change) toast(change.enabled ? 'Auto thermo on. It takes requests for your review from now on and publishes like the button: an approval or a request for changes, from your account.' : 'Auto thermo off. A review it already started keeps running.')
+  } catch (e) { toast(e.message, true) }
+  finally {
+    S.autoBusy = false
+    renderAuto()
+    renderBoard()
+    // The server checks again at once; pick up what it found.
+    clearTimeout(autoTimer)
+    autoTimer = setTimeout(loadAuto, 3000)
+  }
+}
+
 async function loadFullLog(id) {
   try {
     const r = await api(`/api/runs/${id}`)
@@ -2007,6 +2117,7 @@ const ACTIONS = {
   triage: () => startOverview('triage'),
   'overnight-start': () => overnightAction('start'),
   'overnight-stop': () => overnightAction('stop'),
+  'auto-toggle': () => autoSettings({ enabled: !S.auto?.settings.enabled }),
   filter: ({ lane }) => {
     S.lane = lane
     for (const key of [...S.seen]) if (key.startsWith('lane:')) S.seen.delete(key)
@@ -2061,14 +2172,21 @@ const ACTIONS = {
   'run-dismiss': ({ run }) => runVerb(run, 'dismiss'),
   skip: ({ pr }) => {
     const all = skippedAt()
-    if (skipped(pr)) delete all[pr.url]
-    else all[pr.url] = new Date().toISOString()
-    // Drop entries for PRs that left the inbox, so the list does not grow forever.
-    const open = new Set(allPrs().map(p => p.url))
-    for (const url of Object.keys(all)) if (!open.has(url)) delete all[url]
+    const at = new Date().toISOString()
+    const on = !skipped(pr)
+    if (on) all[pr.url] = at
+    else delete all[pr.url]
+    // Drop entries for PRs that left the inbox, so the list does not grow forever. A partial list says nothing
+    // about the PRs it lacks, so theirs stay.
+    if (!S.data?.warning) {
+      const open = new Set(allPrs().map(p => p.url))
+      for (const url of Object.keys(all)) if (!open.has(url)) delete all[url]
+    }
     remember('skipped', JSON.stringify(all))
     renderHeader()
     renderBoard()
+    // Only this change goes to the server, so a Skip made in another window stays.
+    sendSkips(on ? { skipped: { [pr.url]: at } } : { unskipped: { [pr.url]: at } }, true)
   },
   menu: ({ el }) => {
     const key = el.dataset.menu
@@ -2204,6 +2322,9 @@ document.addEventListener('input', ({ target: t }) => {
   if (t.dataset.act === 'comment-draft' && S.detail) S.comments[findPr(S.detail).url] = t.value
   if (t.id === 'search') { S.query = t.value; renderHeader(); renderBoard() }
 })
+document.addEventListener('change', ({ target: t }) => {
+  if (t.dataset.act === 'auto-limit') autoSettings({ [t.dataset.key]: Number(t.value) })
+})
 document.addEventListener('keydown', ev => {
   const t = ev.target
   if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
@@ -2263,6 +2384,7 @@ if (initialPr) openLinkedPr(initialPr)
 loadPrs()
 loadRuns()
 loadOvernight()
+loadAuto()
 loadHealth()
 </script>
 </body>
