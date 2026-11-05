@@ -1002,7 +1002,7 @@ function goButtons(prs, scoped = false) {
   const tip = !n ? 'Tick the PRs to merge first' : releases.length ? `Squash-merge, then release ${releases.map(repoName).join(', ')}` : 'None of these repos releases, so they can only merge'
   const attrs = scoped ? ` data-keys="${esc(JSON.stringify(prs.map(keyOf)))}"` : ''
   return `<button class="btn btn-sm" data-act="pick-go" data-release="false"${attrs} title="${n ? 'Squash-merge, no release' : esc(tip)}"${n ? '' : ' disabled'}>Merge${n ? ' ' + n : ''}</button>
-    <button class="btn btn-sm btn-primary" data-act="pick-go" data-release="true"${attrs} title="${esc(tip)}"${releases.length ? '' : ' disabled'}>${icon('rocket', 14)}Merge &amp; release${n ? ' ' + n : ''}</button>`
+    <button class="btn btn-sm btn-primary" data-act="pick-go" data-release="true"${attrs} title="${esc(tip)}${n && !scoped ? ' (⌘↵)' : ''}"${releases.length ? '' : ' disabled'}>${icon('rocket', 14)}Merge &amp; release${n ? ' ' + n : ''}</button>`
 }
 
 // A group's ticked PRs; once there are any, its heading trades its own buttons for goButtons over them.
@@ -1552,16 +1552,31 @@ function shipSet(d) {
 const KEYS = [
   ['j ↓', 'Next PR'], ['k ↑', 'Previous PR'], ['o', 'Open the selected PR on GitHub'], ['Esc', 'Close the panel, search or dialog'],
   ['/', 'Search'], ['n', 'Toggle Needs me'], ['g', 'Group by repo or lane'], ['r', 'Refresh PRs'], ['⌘ R', 'Reload the app'],
-  ['⌘ ↵', 'Merge & release the open or ticked PRs, then confirm. In a text box it sends the draft'], ['?', 'This list'],
+  ['x', 'Tick or untick the open PR'], ['⇧ j', 'Tick it and move to the next PR (⇧ k or ⇧ ↑ for the previous)'],
+  ['⌘ ↵', 'Merge & release the ticked PRs at once. With none ticked, opens it for the open PR; ⌘ ↵ again confirms. In a text box it sends the draft'],
+  ['?', 'This list'],
 ]
 
-// ⌘↵ outside a text field: in the Merge & release dialog it presses the button, else it opens that dialog for
-// the ticked PRs, or for the open one. A PR that needs an admin merge is offered there but left unticked.
-function shipShortcut() {
+// ⌘↵ outside a text field. Ticked PRs merge and release at once, with no dialog, unless one of them needs an
+// admin merge: that, and the open PR when nothing is ticked, go through the Merge & release dialog, where a
+// second ⌘↵ presses the button. An admin merge is offered there but left unticked.
+async function shipShortcut() {
   if (S.dialog) return S.dialog.type === 'ship' && $('[data-act="ship-go"]:not(:disabled)')?.click()
   const { keys, admin } = picks(S.picked.size ? undefined : [findPr(S.detail)])
   if (!keys.length && !admin.length) return toast(S.picked.size || S.detail ? 'Nothing here can merge yet' : 'Open or tick a PR to merge it')
-  openShip(keys, { admin: [], offer: admin })
+  if (!S.picked.size || admin.length) return openShip(keys, { admin: [], offer: admin })
+  toast(`Merging ${plural(keys.length, 'PR')}`)
+  // Without the repos' release plans a repo looks unreleasable and would only merge.
+  if (keys.some(k => !S.plans[findPr(k).repo])) await loadPlans()
+  ship({ keys, admin: [], release: true })
+}
+
+// x ticks or unticks the open PR; Shift with j, k or an arrow ticks it and moves on.
+function toggleTick(tick = !S.picked.has(S.detail)) {
+  const pr = S.detail && findPr(S.detail)
+  if (!pr || !pickable(pr)) return toast(pr ? 'This PR cannot merge yet' : 'Open a PR to tick it')
+  if (tick) S.picked.add(S.detail); else S.picked.delete(S.detail)
+  renderBoard()
 }
 
 function openDialog(d) {
@@ -2074,8 +2089,14 @@ document.addEventListener('keydown', ev => {
   if (ev.key === 'r') loadPrs()
   if (ev.key === 'g') setGroup(S.group === 'repo' ? 'lane' : 'repo')
   if (ev.key === '/') { ev.preventDefault(); $('#search').focus() }
+  if (ev.shiftKey && ['J', 'K', 'ArrowDown', 'ArrowUp'].includes(ev.key)) {
+    ev.preventDefault()
+    if (S.detail) toggleTick(true)
+    return stepDetail(ev.key === 'J' || ev.key === 'ArrowDown' ? 1 : -1)
+  }
   if (ev.key === 'j' || ev.key === 'ArrowDown') { ev.preventDefault(); stepDetail(1) }
   if (ev.key === 'k' || ev.key === 'ArrowUp') { ev.preventDefault(); stepDetail(-1) }
+  if (ev.key === 'x') toggleTick()
   if (ev.key === 'o' && S.detail) openUrl(findPr(S.detail).url)
   if (ev.key === '?') openDialog({ type: 'keys' })
   if (ev.key === 'n') setShow(S.show === 'needs' ? 'all' : 'needs')
