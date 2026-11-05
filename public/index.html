@@ -267,6 +267,8 @@ button.state:hover { color: #fff; }
 .dialog-body { font-size: 13.5px; line-height: 1.55; color: var(--sub); }
 .dialog-body b { color: var(--text); }
 .dialog-body code { background: var(--bg); padding: 0 5px; border-radius: 4px; color: var(--text); }
+.keys { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; align-items: center; }
+.keys kbd { display: inline-block; min-width: 22px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font: 12px var(--mono, ui-monospace, monospace); text-align: center; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialog ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--text); }
 .dialog ul span { color: var(--sub); }
@@ -930,7 +932,7 @@ function row(pr, lane, byRepo = false) {
 // page), then the thermo-nuclear review until the current commit has passed it. Every other action is in the menu.
 function extras(pr, verb, mine) {
   const button = (v, body, tip) => `<button class="btn" data-act="verb" data-verb="${v}" title="${esc(tip)}">${body}</button>`
-  const one = verb === 'merge' && can('ship', pr, mine) ? button('ship', `${icon('rocket', 14)}Merge &amp; release`, shipTip(pr.repo))
+  const one = verb === 'merge' && can('ship', pr, mine) ? button('ship', `${icon('rocket', 14)}Merge &amp; release`, `${shipTip(pr.repo)} (⌘↵)`)
     : can('resolve', pr, mine) ? button('resolve', `${icon('sparkle', 14)}Resolve &amp; review`, `One Claude run: merge ${pr.base} and resolve the conflicts, push, then run the thermo-nuclear review on the result. It stops before the review if the conflicts need you.`)
     : can('admin', pr, mine) ? button('admin', `${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}`, 'Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.')
     : can('approve', pr, mine) ? button('approve', `${icon('sparkle', 14)}Thermo &amp; approve`, `Thermo-nuclear review without changing the PR, then approve with a funny comment, or request changes if something is critical. You confirm first.`)
@@ -1463,6 +1465,9 @@ function drawDialog() {
        ${write}
        <div class="quick">${quick}</div>`,
       `${cancel}<button class="btn btn-primary" data-act="ask-send">Send to Claude</button>`)
+  } else if (d.type === 'keys') {
+    $('#dialog').innerHTML = frame('Keyboard shortcuts', `<div class="keys">${KEYS.map(([k, what]) => `<span>${k.split(' ').map(x => `<kbd>${esc(x)}</kbd>`).join(' ')}</span><span>${esc(what)}</span>`).join('')}</div>`,
+      '<button class="btn btn-primary" data-act="dialog-close">Close</button>')
   } else if (d.type === 'confirm') {
     const c = VERBS[d.verb].confirm
     $('#dialog').innerHTML = frame(c.title(pr), c.body(pr), `${cancel}<button class="btn btn-primary" data-act="dialog-go">${c.go}</button>`)
@@ -1541,6 +1546,22 @@ function shipSet(d) {
   const offered = (d.offer || []).map(findPr).filter(Boolean)
   const repos = [...new Set([d.repo, ...offered.map(pr => pr.repo), ...prs.map(pr => pr.repo), ...forced.map(pr => pr.repo)].filter(Boolean))]
   return { prs, forced, repos }
+}
+
+// The cheat sheet `?` opens. Keep it in step with the keydown handler at the bottom.
+const KEYS = [
+  ['j ↓', 'Next PR'], ['k ↑', 'Previous PR'], ['o', 'Open the selected PR on GitHub'], ['Esc', 'Close the panel, search or dialog'],
+  ['/', 'Search'], ['n', 'Toggle Needs me'], ['g', 'Group by repo or lane'], ['r', 'Refresh PRs'], ['⌘ R', 'Reload the app'],
+  ['⌘ ↵', 'Merge & release the open or ticked PRs, then confirm. In a text box it sends the draft'], ['?', 'This list'],
+]
+
+// ⌘↵ outside a text field: in the Merge & release dialog it presses the button, else it opens that dialog for
+// the ticked PRs, or for the open one. A PR that needs an admin merge is offered there but left unticked.
+function shipShortcut() {
+  if (S.dialog) return S.dialog.type === 'ship' && $('[data-act="ship-go"]:not(:disabled)')?.click()
+  const { keys, admin } = picks(S.picked.size ? undefined : [findPr(S.detail)])
+  if (!keys.length && !admin.length) return toast(S.picked.size || S.detail ? 'Nothing here can merge yet' : 'Open or tick a PR to merge it')
+  openShip(keys, { admin: [], offer: admin })
 }
 
 function openDialog(d) {
@@ -1989,11 +2010,13 @@ const ACTIONS = {
   },
 }
 
+// Inside the app window, web links open in the default browser instead of replacing the app.
+const openUrl = url => S.inApp ? api('/api/open', { url }).catch(e => toast(e.message, true)) : window.open(url, '_blank', 'noreferrer')
+
 document.addEventListener('click', ev => {
   const el = ev.target.closest('[data-act]')
   // Any click except the one that toggles it closes the row menu, links inside it included.
   if (S.menu && el?.dataset.act !== 'menu') { S.menu = null; renderBoard() }
-  // Inside the app window, web links open in the default browser instead of replacing the app.
   const link = ev.target.closest('a[href]')
   // A row's title opens the PR here; ⌘-click still goes to GitHub.
   if (link?.dataset.act === 'detail' && !ev.metaKey && !ev.ctrlKey) {
@@ -2003,7 +2026,7 @@ document.addEventListener('click', ev => {
   if (link) {
     if (S.inApp && /^https:\/\//.test(link.href) && !link.href.startsWith(location.origin)) {
       ev.preventDefault()
-      api('/api/open', { url: link.href }).catch(e => toast(e.message, true))
+      openUrl(link.href)
     }
     return
   }
@@ -2029,6 +2052,7 @@ document.addEventListener('keydown', ev => {
     if (t.dataset.act === 'draft') { ev.preventDefault(); $('[data-act="ask-send"]')?.click() }
     if (t.dataset.act === 'reply-draft') { ev.preventDefault(); ACTIONS['reply-send']({ run: t.dataset.run }) }
     if (t.dataset.act === 'comment-draft') { ev.preventDefault(); ACTIONS['comment-send']() }
+    if (!t.matches('input, textarea')) { ev.preventDefault(); shipShortcut() }
     return
   }
   // ⌘R reloads the whole app, page and data, from anywhere: the app window has no browser menu that would.
@@ -2050,8 +2074,10 @@ document.addEventListener('keydown', ev => {
   if (ev.key === 'r') loadPrs()
   if (ev.key === 'g') setGroup(S.group === 'repo' ? 'lane' : 'repo')
   if (ev.key === '/') { ev.preventDefault(); $('#search').focus() }
-  if (ev.key === 'j') stepDetail(1)
-  if (ev.key === 'k') stepDetail(-1)
+  if (ev.key === 'j' || ev.key === 'ArrowDown') { ev.preventDefault(); stepDetail(1) }
+  if (ev.key === 'k' || ev.key === 'ArrowUp') { ev.preventDefault(); stepDetail(-1) }
+  if (ev.key === 'o' && S.detail) openUrl(findPr(S.detail).url)
+  if (ev.key === '?') openDialog({ type: 'keys' })
   if (ev.key === 'n') setShow(S.show === 'needs' ? 'all' : 'needs')
 })
 document.querySelectorAll('[data-icon]').forEach(el => { el.outerHTML = icon(el.dataset.icon) })
