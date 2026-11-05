@@ -653,9 +653,10 @@ const askedAgain = pr => LANE[pr.lane].theirs && !!pr.askedAt && [pr.yourReviewA
 // You asked changes and the author pushed since: the head is no longer the commit your review was on, so the
 // PR is back on you even if nobody re-requested your review.
 const pushedSince = pr => LANE[pr.lane].theirs && pr.yourReview === 'CHANGES_REQUESTED' && !!pr.yourReviewSha && !!pr.headSha && pr.yourReviewSha !== pr.headSha
-// Someone else's PR you chose to skip: PR url to when you skipped it. A new request for your review brings it back.
+// A PR you chose to skip, or snooze when it is yours: PR url to when you did. A new request for your review brings
+// someone else's back; a review or comment from someone else brings yours back.
 const skippedAt = () => { try { return JSON.parse(recall('skipped') || '{}') } catch { return {} } }
-const skipped = pr => { const at = LANE[pr.lane].theirs && skippedAt()[pr.url]; return !!at && !(pr.askedAt > at) }
+const skipped = pr => { const at = skippedAt()[pr.url]; return !!at && !((LANE[pr.lane].theirs ? pr.askedAt : pr.feedbackAt) > at) }
 // Someone else's PR you already handed to a Claude review that is queued, running or done. A failed or stopped
 // run keeps the PR on you, and a request for your review after the run started brings it back.
 const REVIEW_KINDS = ['review', 'thermo', 'resolve', 'approve']
@@ -758,7 +759,7 @@ function renderHeader() {
   if (S.data && !pills.some(p => p.id === S.lane)) S.lane = 'all'
   const show = choose('show', S.show, 'Which pull requests to show', 'Show', [
     ['all', 'Everyone', 'Every PR in your inbox (N)'],
-    ['needs', 'Needs me', 'Hides PRs you skipped or sent to a Claude review, PRs you already approved or asked changes on, until someone asks for your review again or the author pushes after your request for changes, and PRs another reviewer asked changes on or that wait on their author (N)'],
+    ['needs', 'Needs me', 'Hides your PRs you snoozed until someone reviews or comments, PRs you skipped or sent to a Claude review, PRs you already approved or asked changes on, until someone asks for your review again or the author pushes after your request for changes, and PRs another reviewer asked changes on or that wait on their author (N)'],
   ])
   const group = choose('group', S.group, 'Group pull requests', 'Group by', [['lane', 'Status', 'Group by status (G)'], ['repo', 'Repository', 'Group by repository (G)']])
   const pillsHtml = pills.map(f => `<button class="pill" data-act="filter" data-lane="${f.id}" aria-pressed="${S.lane === f.id}">${f.dot ? `<span class="dot" style="--dot:${f.dot}"></span>` : ''}${esc(f.label)}<span class="n">${f.n}</span></button>`).join('')
@@ -848,7 +849,8 @@ function tags(pr, lane, byRepo) {
   else ({ pass: () => tag('CI passing', 'tag-ok'), fail: () => tag('CI failing', 'tag-bad'), running: () => tag('CI running', 'tag-mute'), none: () => tag('No checks', 'tag-mute') })[pr.ci]()
   if (pr.mergeable === 'CONFLICTING') tag('Conflicts', 'tag-bad')
   if (pr.mergeState === 'BEHIND') tag('Behind base', 'tag-warn')
-  if (skipped(pr)) tag('Skipped', 'tag-mute', 'Hidden under Needs me until someone asks for your review again')
+  if (skipped(pr)) LANE[pr.lane].theirs ? tag('Skipped', 'tag-mute', 'Hidden under Needs me until someone asks for your review again')
+    : tag('Snoozed', 'tag-mute', 'Hidden under Needs me until someone reviews or comments on it')
   else if (askedAgain(pr)) tag(`↻ Asked again ${ago(Date.parse(pr.askedAt))}`, 'tag-info',
     pr.yourReviewAt && pr.askedAt > pr.yourReviewAt ? 'Your review was requested again after you reviewed it' : 'Your review was requested again after a reviewer asked for changes')
   else if (pushedSince(pr)) tag('↻ Pushed since your review', 'tag-info', `You asked for changes on ${pr.yourReviewSha.slice(0, 7)}; the head is now ${pr.headSha.slice(0, 7)}`)
@@ -907,8 +909,9 @@ function actsHtml(pr, lane, menuKey) {
     let [label, verb] = lane.action || []
     if (verb && !can(verb, pr, mine)) verb = null
     // On your own PRs the thermo-nuclear review stays one click away until the current commit has passed it.
-    return `${verb ? `<button class="btn btn-primary" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${extras(pr, verb, mine)}${mine ? '' : skipped(pr)
-        ? '<button class="btn" data-act="skip" title="Show it under Needs me again">Unskip</button>'
+    return `${verb ? `<button class="btn btn-primary" data-act="verb" data-verb="${verb}">${esc(label)}</button>` : ''}${extras(pr, verb, mine)}${skipped(pr)
+        ? `<button class="btn" data-act="skip" title="Show it under Needs me again">${mine ? 'Unsnooze' : 'Unskip'}</button>`
+        : mine ? '<button class="btn btn-ghost" data-act="skip" title="Hide it under Needs me until someone reviews or comments on it">Snooze</button>'
         : '<button class="btn btn-ghost" data-act="skip" title="Hide it under Needs me until someone asks for your review again">Skip</button>'}
       <button class="btn btn-ghost btn-icon" data-act="menu" data-menu="${esc(menuKey)}" title="More" aria-label="More actions" aria-expanded="${S.menu === menuKey}">${icon('more')}</button>${menu}`
   }
@@ -1083,8 +1086,8 @@ function repoBuckets() {
   return repos.map(repo => {
     const ready = sortOf(repo) === 'ready'
     const list = shown.filter(pr => pr.repo === repo).sort((a, b) => (ready && (cleared(b) - cleared(a) || order[a.lane] - order[b.lane])) || newestFirst(a, b))
-    // A ticked PR goes out with Merge & release, so the note leaves it out.
-    const out = releasable(repo) ? leftOut(repo).filter(pr => !S.picked.has(keyOf(pr))) : []
+    // A ticked PR goes out with Merge & release, and a snoozed one waits on a reviewer, so the note leaves both out.
+    const out = releasable(repo) ? leftOut(repo).filter(pr => !S.picked.has(keyOf(pr)) && !skipped(pr)) : []
     const ticked = tickedIn(list)
     const sort = choose('sort', sortOf(repo), `Sort ${esc(repoName(repo))} pull requests`, 'Sort', [
       ['ready', 'Ready first', 'Green PRs whose review passed on top, then the rest by status'],

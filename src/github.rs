@@ -151,6 +151,9 @@ pub struct Pr {
     pub your_review_sha: String,
     /// When someone last asked you by name to review it; empty when nobody has, or on your own PRs.
     pub asked_at: String,
+    /// When a person other than the author last reviewed or commented on it; bots do not count. Empty when
+    /// nobody has.
+    pub feedback_at: String,
 }
 
 impl Pr {
@@ -239,6 +242,8 @@ const FIELDS: &str = r#"
   viewerLatestReview { state submittedAt commit { oid } }
   timelineItems(itemTypes: [REVIEW_REQUESTED_EVENT], last: 100) { nodes { ... on ReviewRequestedEvent { createdAt requestedReviewer { ... on User { login } ... on Team { slug organization { login } } } } } }
   latestOpinionatedReviews(first: 20) { nodes { state submittedAt author { login } } }
+  reviews(last: 20) { nodes { submittedAt author { __typename login } } }
+  comments(last: 20) { nodes { createdAt author { __typename login } } }
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 100) { nodes {
     __typename
     ... on CheckRun { name conclusion status detailsUrl startedAt completedAt }
@@ -376,6 +381,7 @@ fn to_pr(n: &Value) -> Pr {
         your_review_at: text(n, "/viewerLatestReview/submittedAt"),
         your_review_sha: text(n, "/viewerLatestReview/commit/oid"),
         asked_at: String::new(),
+        feedback_at: feedback_at(n),
     };
     for r in nodes("/latestOpinionatedReviews/nodes").iter().filter(|r| r["state"] == "CHANGES_REQUESTED") {
         pr.changes_by.push(r.pointer("/author/login").and_then(Value::as_str).unwrap_or("ghost").to_string());
@@ -383,6 +389,16 @@ fn to_pr(n: &Value) -> Pr {
     }
     pr.writable = pr.write_refusal().is_none();
     pr
+}
+
+/// When a person other than the author of the PR in node `n` last sent a review or a comment on it.
+fn feedback_at(n: &Value) -> String {
+    let author = text(n, "/author/login");
+    let by_person = |e: &&Value| e.pointer("/author/__typename").and_then(Value::as_str) == Some("User")
+        && e.pointer("/author/login").and_then(Value::as_str).is_some_and(|l| l != author);
+    let at = |list: &str, field: &str| n.pointer(list).and_then(Value::as_array).into_iter().flatten().filter(by_person)
+        .map(|e| text(e, field)).max().unwrap_or_default();
+    at("/reviews/nodes", "/submittedAt").max(at("/comments/nodes", "/createdAt"))
 }
 
 /// When `login` was last asked by name to review the PR in node `n`; empty when never.
@@ -839,6 +855,16 @@ mod tests {
         assert_eq!((asked.changes_by, asked.changes_at.as_str()), (vec!["a".to_string(), "c".to_string()], "2026-10-30T18:15:07Z"));
         let yours = Pr { lane: Lane::Ready, ..Default::default() };
         assert_eq!(yours.approve_refusal(), Some("Only someone else's PR can be approved"));
+    }
+
+    #[test]
+    fn feedback_counts_people_other_than_the_author() {
+        let person = |login: &str| json!({ "__typename": "User", "login": login });
+        let n = json!({ "author": { "login": "me" },
+            "reviews": { "nodes": [{ "submittedAt": "2026-11-03T00:00:00Z", "author": person("a") }, { "submittedAt": "2026-11-05T00:00:00Z", "author": person("me") }] },
+            "comments": { "nodes": [{ "createdAt": "2026-11-04T00:00:00Z", "author": { "__typename": "Bot", "login": "cla" } }] } });
+        assert_eq!(feedback_at(&n), "2026-11-03T00:00:00Z");
+        assert_eq!(feedback_at(&json!({ "author": { "login": "me" } })), "");
     }
 
     #[test]
