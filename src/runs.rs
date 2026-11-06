@@ -542,7 +542,8 @@ impl Run {
                                 if let Some(dir) = job.prepared.take().map(|p| p.dir) { std::thread::spawn(move || review_flow::remove_snapshot(&dir)); }
                                 job.rounds += 1;
                                 job.stage = Stage::Repair;
-                                retry = job.report.take().map(|r| (r, job.rounds));
+                                job.previous = job.report.take();
+                                retry = job.previous.clone().map(|r| (r, job.rounds));
                             }
                             Ok(()) => { job.stage = Stage::Publishing; self.status = Status::Running; }
                             Err(e) => { self.status = Status::Failed; self.push(EventKind::Error, e); }
@@ -931,7 +932,7 @@ impl Store {
             tokio::spawn(async move {
                 enum Next { Prepared(review_flow::Prepared), Published(Option<review_flow::Receipt>, String) }
                 let result = match job.stage {
-                    Stage::Preparing => review_flow::prepare(&url, Path::new(&cwd), !approve).await.map(Next::Prepared),
+                    Stage::Preparing => review_flow::prepare(&url, Path::new(&cwd), !approve, job.previous.as_ref()).await.map(Next::Prepared),
                     Stage::Publishing => match job.prepared.as_ref().zip(job.report.as_ref()) {
                         Some((prepared, report)) => review_flow::finish(prepared, report, &url, approve).await.map(|(receipt, text)| Next::Published(receipt, text)),
                         None => Err("Missing review evidence. Start a new review; nothing was published".into()),
@@ -1541,7 +1542,7 @@ mod tests {
         let mut job = Job::new(true);
         job.stage = Stage::Reviewing;
         job.prepared = Some(review_flow::Prepared { scope: scope.clone(), dir: PathBuf::from("/snapshot") });
-        let report = review_flow::Report { scope, maintainability_complete: true, correctness_complete: true, verdict: review_flow::Outcome::Pass, summary: "No blockers".into(), findings: vec![] };
+        let report = review_flow::Report { scope, maintainability_complete: true, correctness_complete: true, verdict: review_flow::Outcome::Pass, summary: "No blockers".into(), findings: vec![], notes: vec![] };
         let mut r = Run { kind: Kind::Approve, review_job: Some(job), ..run() };
         r.on_event(&json!({ "type": "result", "is_error": false, "structured_output": report }));
         // An unrelated task result must not replace the final report.
@@ -1559,7 +1560,7 @@ mod tests {
     #[test]
     fn a_failed_final_review_sends_its_findings_back_to_repair() {
         let scope = crate::reviews::ReviewScope { repo: "o/r".into(), number: 7, branch: "feat".into(), base: "main".into(), base_sha: "a".repeat(40), head_sha: "b".repeat(40) };
-        let report = review_flow::Report { scope: scope.clone(), maintainability_complete: true, correctness_complete: true, verdict: review_flow::Outcome::Fail, summary: "Teardown leaks".into(), findings: vec!["ci.yml:33 deploys more apps than teardown removes".into()] };
+        let report = review_flow::Report { scope: scope.clone(), maintainability_complete: true, correctness_complete: true, verdict: review_flow::Outcome::Fail, summary: "Teardown leaks".into(), findings: vec!["ci.yml:33 deploys more apps than teardown removes".into()], notes: vec![] };
         let reviewed = |rounds| {
             let mut job = Job::new(false);
             job.stage = Stage::Reviewing;
@@ -1576,6 +1577,7 @@ mod tests {
         assert_eq!(r.status, Status::Queued);
         assert_eq!(r.review_job.as_ref().unwrap().stage, Stage::Repair);
         assert!(r.queued.as_ref().unwrap().prompt.contains("deploys more apps than teardown removes"));
+        assert_eq!(r.review_job.as_ref().unwrap().previous.as_ref().map(|p| p.summary.as_str()), Some("Teardown leaks"), "the next review checks this one");
         // After the last round the FAIL is published instead of looping forever.
         let (r, _) = reviewed(review_flow::MAX_ROUNDS);
         assert_eq!(r.review_job.as_ref().unwrap().stage, Stage::Publishing);

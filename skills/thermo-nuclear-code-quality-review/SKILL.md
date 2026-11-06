@@ -66,7 +66,7 @@ Apply these standards:
 - Split a module when doing so removes coupling or gives a concept a clear home. File length is never a finding on its own, at any threshold.
 
 For each proposed simplification, identify the concrete complexity it removes and why behavior stays intact.
-Do not block a change on a speculative rewrite, personal naming preference, or a cosmetic nit.
+Do not block a change on a speculative rewrite, personal naming preference, or a cosmetic nit. List those as notes.
 Do not move complexity between files and call that a simplification.
 
 Prioritize structural regressions, substantial missed simplifications, scattered branching, unclear contracts, then other maintainability issues.
@@ -131,7 +131,26 @@ If the same check fails there too, the PR did not cause it: report it and do not
 When authorized to repair CI, stop after three unsuccessful repair rounds and report the remaining failure.
 Every CI code fix requires another final review before PASS.
 
+## Re-review
+
+A re-review is any review of a PR that an earlier review already read.
+PR Inbox supplies `previous-review.md` with that review, and `since-previous-review.patch` with the PR's files changed since its head when that head can still be fetched.
+In standalone mode, find your latest review on the PR and diff its commit against the current head.
+
+The first review reports every blocker it can find.
+A re-review confirms the fixes. It is not a fresh audit, so the author never receives blockers one round at a time.
+
+1. Check every earlier finding first. An unresolved earlier blocker stays a blocker; name it.
+2. Raise a new blocker only for code changed since the earlier review, including the fixes it asked for.
+3. Code the earlier review already read yields a new blocker only for a confirmed correctness defect with concrete user, money or data impact whose trigger needs no extra setup, configuration change or future code. Everything else found there is a note: the earlier review accepted it.
+4. Do not ask to remove, move or undo code that an earlier review asked for or built its findings on, unless rule 3 makes it a blocker.
+5. A merge from the target branch can put unrelated hunks into `since-previous-review.patch`. Judge those against `diff.patch`.
+
 ## Shared verdict criteria
+
+Each finding is a blocker or a note.
+Blockers meet the maintainability or correctness bar below and fail the review.
+Notes are items below that bar, and items the re-review rules demote. They never fail a review and are published with an approval.
 
 `pass` requires both review passes to be complete for the same exact identity, with no unresolved blocker.
 The maintainability bar rejects demonstrated structural regressions, avoidable scattered branching, needless indirection, unclear contracts, duplicated canonical logic, and concrete substantial missed simplifications.
@@ -156,8 +175,9 @@ Use these fields:
 - `verdict`: `pass`, `fail`, or `incomplete` under the shared criteria.
 - `summary`: one concise line stating the verdict's reason or the missing evidence.
 - `findings`: strings describing each remaining blocker or completion gap with locations where available. Use an empty array only when none remain.
+- `notes`: strings describing each non-blocking item with its location. Use an empty array when there are none.
 
-For PASS, both completion fields must be true and `findings` must be empty.
+For PASS, both completion fields must be true and `findings` must be empty. Notes may remain.
 Do not include fixed findings in the final result; those belong in the repair report.
 The app validates the result and performs any authorized publication itself.
 

@@ -17,7 +17,7 @@ import urllib.error
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
-BINARY = ROOT / "target/debug/pr-inbox"
+BINARY = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")) / "debug/pr-inbox"
 PYTHON = shutil.which("python3")
 
 FAKE = r'''
@@ -42,6 +42,12 @@ if pathlib.Path(sys.argv[0]).name == "claude":
             state["head"] = "c" * 40
             (root / "fixture.json").write_text(json.dumps(state))
         if state["scenario"] == "incomplete": result["correctnessComplete"] = False
+        if state["scenario"] == "rereview":
+            previous, since = pathlib.Path("previous-review.md"), pathlib.Path("since-previous-review.patch")
+            seen = json.loads((root / "seen.json").read_text()) if (root / "seen.json").exists() else []
+            seen.append({"previous":previous.read_text() if previous.exists() else None, "since":since.read_text() if since.exists() else None})
+            (root / "seen.json").write_text(json.dumps(seen))
+            result["notes"] = ["code.txt:1 could name the change"]
         emit({"type":"system","subtype":"init","cwd":os.getcwd(),"apiKeySource":"none"})
         emit({"type":"result","is_error":False,"result":"Review complete","structured_output":result})
     else:
@@ -60,7 +66,9 @@ if args[:2] == ["api", "graphql"]:
     emit({"data":{"viewer":{"login":"me","pullRequests":{"nodes":[node] if mine else []}},
         "repository":{"pullRequest":node},"reviews":{"nodes":[] if mine else [node]},
         "assigned":{"nodes":[]},"reviewed":{"nodes":[]}}})
-elif args[:2] == ["pr", "view"]: emit({"title":"Test review","body":"Check the implementation","reviews":[],"comments":[]})
+elif args[:2] == ["pr", "view"]:
+    reviews = [{"author":{"login":r["user"]["login"]},"body":r["body"],"state":r["state"]} for r in json.loads((root / "posted.json").read_text())]
+    emit({"title":"Test review","body":"Check the implementation","reviews":reviews,"comments":[]})
 elif args[:2] == ["pr", "checks"]:
     pending = state.get("pending", False)
     emit([{"name":"test","state":"IN_PROGRESS" if pending else "SUCCESS"}])
@@ -174,7 +182,7 @@ def case(scenario):
             expected = "failed" if scenario in ["stale", "incomplete", "pending", "ambiguous", "rejected"] else "done"
             assert run["status"] == expected, (scenario, run)
             posted = json.loads((root / "posted.json").read_text())
-            assert len(posted) == (1 if scenario in ["success", "ambiguous", "superseded"] else 0), (scenario, posted)
+            assert len(posted) == (1 if scenario in ["success", "ambiguous", "superseded", "rereview"] else 0), (scenario, posted)
             if scenario in ["pending", "ambiguous", "rejected"]:
                 fixture["pending"] = False
                 fixture["reject"] = False
@@ -191,6 +199,22 @@ def case(scenario):
                 assert again["status"] == "done", again
                 records = json.loads((root / "posted.json").read_text())
                 assert len(records) == 3 and records[-1]["state"] == "APPROVED", records
+            if scenario == "rereview":
+                (repo / "code.txt").write_text("fixed after review\n")
+                git(repo, "commit", "-qam", "address review")
+                pushed = git(repo, "rev-parse", "HEAD")
+                git(repo, "push", "--quiet", str(origin), "feat")
+                fixture["head"] = pushed
+                (root / "fixture.json").write_text(json.dumps(fixture))
+                again = settled(request("/api/runs", body)["id"])
+                assert again["status"] == "done", again
+                first, second = json.loads((root / "seen.json").read_text())
+                assert first == {"previous":None, "since":None}, first
+                assert second["previous"].startswith(f"Reviewed head: {head}") and "Both passes found no blockers" in second["previous"], second
+                assert "-reviewed change" in second["since"] and "+fixed after review" in second["since"], second
+                records = json.loads((root / "posted.json").read_text())
+                assert records[-1]["commit_id"] == pushed and "Non-blocking:\n- code.txt:1 could name the change" in records[-1]["body"], records
+                head = pushed
             if scenario == "success":
                 again = settled(request("/api/runs", body)["id"])
                 assert again["status"] == "done", again
@@ -211,5 +235,5 @@ def case(scenario):
 
 
 if __name__ == "__main__":
-    for scenario in ["success", "repair", "stale", "incomplete", "pending", "ambiguous", "rejected", "superseded"]:
+    for scenario in ["success", "repair", "stale", "incomplete", "pending", "ambiguous", "rejected", "superseded", "rereview"]:
         case(scenario)

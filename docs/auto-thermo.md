@@ -34,7 +34,7 @@ If usage cannot be read, nothing starts, and the notice says why. That covers a 
 
 ## What it publishes
 
-The run is the button's own run, and PR Inbox publishes its result from your account the same way. A passing review approves the PR. Blocking findings request changes and list what to fix. An incomplete review publishes nothing. Before publishing, PR Inbox checks that the reviewed commits still match the PR. Before it approves, it also checks that every check passed.
+The run is the button's own run, and PR Inbox publishes its result from your account the same way. A passing review approves the PR, with any non-blocking notes in its text. Blocking findings request changes and list what to fix. When the author asks again, the next review starts from your earlier review and the changes since it. It blocks only on unfixed findings, on code changed since, or on a confirmed bug with real impact, so findings do not arrive one round at a time. An incomplete review publishes nothing. Before publishing, PR Inbox checks that the reviewed commits still match the PR. Before it approves, it also checks that every check passed.
 
 Each automatic start sends a macOS notification naming the PR and your session percentage. The run's card says it started automatically.
 
