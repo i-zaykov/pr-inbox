@@ -1,7 +1,8 @@
 // Starts Thermo & approve by itself when someone asks for your review on their PR after Auto thermo was turned on,
 // its checks pass and your Claude plan has room: the session below one limit and every weekly limit below another.
 // It is the button's own run, so it publishes the same way: an approval on PASS, a request for changes on FAIL. One
-// automatic run at a time, and at most one start per head commit.
+// automatic run at a time. It takes only the first review of a PR: at most one start per PR, and none once you
+// reviewed it, so a new commit or a new request after a review waits for you.
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -111,14 +112,15 @@ enum Choice {
 
 /// Whether the automatic run takes this PR. Only someone else's open, non-draft PR that asks for your review, asked
 /// since Auto thermo was turned on (`new`), and that Thermo & approve may take; not one you skipped since the last
-/// request (the page's rule), and not a head you reviewed, it started before, or the button reviewed (`reviewed`).
+/// request (the page's rule). Only the first review is automatic: not a PR you already reviewed on GitHub, one it
+/// started on before (`attempted`), or one a Thermo & approve run reviewed (`reviewed`), whatever its head now.
 /// `busy`: another run works on the PR.
-fn choice(pr: &Pr, new: bool, skipped_at: Option<&str>, attempted: Option<&str>, busy: bool, reviewed: bool) -> Choice {
+fn choice(pr: &Pr, new: bool, skipped_at: Option<&str>, attempted: bool, busy: bool, reviewed: bool) -> Choice {
     let skipped = skipped_at.is_some_and(|at| pr.asked_at.as_str() <= at);
     if pr.lane != Lane::Waiting || pr.state != "OPEN" || pr.is_draft || !pr.review_requested || pr.approve_refusal().is_some() || skipped || !new {
         return Choice::Skip;
     }
-    if !is_full_sha(&pr.head_sha) || pr.your_review_sha == pr.head_sha || attempted == Some(pr.head_sha.as_str()) || reviewed {
+    if !is_full_sha(&pr.head_sha) || pr.your_review.is_some() || attempted || reviewed {
         return Choice::Skip;
     }
     if busy {
@@ -355,14 +357,14 @@ impl AutoReview {
 
     fn judge(&self, pr: &Pr, store: &Store) -> Choice {
         let busy = store.busy_on(&pr.url);
-        let reviewed = store.approved_head(&pr.url, &pr.head_sha);
+        let reviewed = store.approved(&pr.url);
         let s = self.state.lock().unwrap();
         let new = requested_since(pr, &utc_iso(s.on_since));
-        choice(pr, new, s.skipped.get(&pr.url).map(String::as_str), s.attempts.get(&pr.url).map(|a| a.sha.as_str()), busy, reviewed)
+        choice(pr, new, s.skipped.get(&pr.url).map(String::as_str), s.attempts.contains_key(&pr.url), busy, reviewed)
     }
 
     /// Brings each attempt up to date with its run. A start whose run cannot be found after a restart is marked
-    /// interrupted, and its head does not start again by itself.
+    /// interrupted, and the PR does not start again by itself.
     fn reconcile(&self, store: &Store) -> Result<(), String> {
         let attempts = self.state.lock().unwrap().attempts.clone();
         let mut updates = Vec::new();
@@ -379,7 +381,7 @@ impl AutoReview {
                 next.summary = said.unwrap_or_else(|| a.summary.clone());
             } else if a.active() {
                 next.status = "interrupted".into();
-                next.summary = "The automatic start could not be confirmed after a restart. This head will not start again by itself.".into();
+                next.summary = "The automatic start could not be confirmed after a restart. This PR will not start again by itself.".into();
             }
             if (&next.status, &next.run_id, &next.summary) != (&a.status, &a.run_id, &a.summary) {
                 updates.push((url.clone(), next));
@@ -595,8 +597,8 @@ mod tests {
     }
 
     #[test]
-    fn only_a_new_head_waiting_on_your_review_with_passing_checks_starts() {
-        assert_eq!(choice(&pr(), true, None, None, false, false), Choice::Ready);
+    fn only_the_first_review_of_a_pr_starts_and_only_with_passing_checks() {
+        assert_eq!(choice(&pr(), true, None, false, false, false), Choice::Ready);
         let not_ours = [
             Pr { lane: Lane::Reviewed, ..pr() },
             Pr { state: "MERGED".into(), ..pr() },
@@ -606,18 +608,20 @@ mod tests {
             Pr { your_review_sha: HEAD.into(), your_review: Some(YourReview::Commented), ..pr() },
         ];
         for p in &not_ours {
-            assert_eq!(choice(p, true, None, None, false, false), Choice::Skip, "{:?}", p);
+            assert_eq!(choice(p, true, None, false, false, false), Choice::Skip, "{:?}", p);
         }
-        assert_eq!(choice(&pr(), true, None, Some(HEAD), false, false), Choice::Skip, "already started on this head");
-        assert_eq!(choice(&pr(), true, None, None, false, true), Choice::Skip, "the button already reviewed this head");
-        assert_eq!(choice(&pr(), true, None, Some(&"b".repeat(40)), false, false), Choice::Ready, "a new head is eligible again");
-        let approved_on_older_head = Pr { your_review: Some(YourReview::Approved), your_review_sha: "b".repeat(40), ..pr() };
-        assert_eq!(choice(&approved_on_older_head, true, None, None, false, false), Choice::Ready, "review requested again on a new head");
+        assert_eq!(choice(&pr(), true, None, true, false, false), Choice::Skip, "it already started on this PR, on any head");
+        assert_eq!(choice(&pr(), true, None, false, false, true), Choice::Skip, "a Thermo & approve run already reviewed this PR");
+        // Asked again on a new commit after any review of yours: the next review is yours to start.
+        for review in [YourReview::ChangesRequested, YourReview::Approved, YourReview::Commented, YourReview::Dismissed] {
+            let reviewed_older_head = Pr { your_review: Some(review), your_review_sha: "b".repeat(40), ..pr() };
+            assert_eq!(choice(&reviewed_older_head, true, None, false, false, false), Choice::Skip, "{review:?}");
+        }
     }
 
     #[test]
     fn a_request_from_before_it_was_turned_on_is_left_alone() {
-        assert_eq!(choice(&pr(), false, None, None, false, false), Choice::Skip);
+        assert_eq!(choice(&pr(), false, None, false, false, false), Choice::Skip);
         let since = "2026-11-05T09:00:00Z";
         assert!(requested_since(&pr(), since), "asked by name after it was turned on");
         let old = Pr { asked_at: "2026-11-04T10:00:00Z".into(), ..pr() };
@@ -629,17 +633,17 @@ mod tests {
 
     #[test]
     fn skip_holds_until_your_review_is_asked_for_again() {
-        assert_eq!(choice(&pr(), true, Some("2026-11-05T11:00:00.000Z"), None, false, false), Choice::Skip);
-        assert_eq!(choice(&pr(), true, Some("2026-11-05T10:00:00Z"), None, false, false), Choice::Skip);
-        assert_eq!(choice(&pr(), true, Some("2026-11-05T09:00:00.000Z"), None, false, false), Choice::Ready);
-        assert_eq!(choice(&Pr { asked_at: String::new(), ..pr() }, true, Some("2026-11-05T09:00:00.000Z"), None, false, false), Choice::Skip);
+        assert_eq!(choice(&pr(), true, Some("2026-11-05T11:00:00.000Z"), false, false, false), Choice::Skip);
+        assert_eq!(choice(&pr(), true, Some("2026-11-05T10:00:00Z"), false, false, false), Choice::Skip);
+        assert_eq!(choice(&pr(), true, Some("2026-11-05T09:00:00.000Z"), false, false, false), Choice::Ready);
+        assert_eq!(choice(&Pr { asked_at: String::new(), ..pr() }, true, Some("2026-11-05T09:00:00.000Z"), false, false, false), Choice::Skip);
     }
 
     #[test]
     fn running_failing_or_missing_checks_and_other_runs_wait_with_a_reason() {
-        assert_eq!(choice(&pr(), true, None, None, true, false), Choice::Wait("Another Claude run is working on this PR"));
+        assert_eq!(choice(&pr(), true, None, false, true, false), Choice::Wait("Another Claude run is working on this PR"));
         for ci in [Ci::Running, Ci::Fail, Ci::None] {
-            assert!(matches!(choice(&Pr { ci, ..pr() }, true, None, None, false, false), Choice::Wait(_)), "{ci:?}");
+            assert!(matches!(choice(&Pr { ci, ..pr() }, true, None, false, false, false), Choice::Wait(_)), "{ci:?}");
         }
     }
 
@@ -752,9 +756,9 @@ mod tests {
         let a = restarted.state.lock().unwrap().attempts[&pr().url].clone();
         assert_eq!(a.status, "interrupted");
         assert!(restarted.status()["running"].is_null());
-        assert_eq!(restarted.judge(&pr(), &Store::empty()), Choice::Skip, "the interrupted head is not started again");
+        assert_eq!(restarted.judge(&pr(), &Store::empty()), Choice::Skip, "the interrupted PR is not started again");
         let pushed = Pr { head_sha: "d".repeat(40), ..pr() };
-        assert_eq!(restarted.judge(&pushed, &Store::empty()), Choice::Ready, "a new head is");
+        assert_eq!(restarted.judge(&pushed, &Store::empty()), Choice::Skip, "not even on a new head");
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 

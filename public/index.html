@@ -425,7 +425,7 @@ body.resizing { cursor: col-resize; user-select: none; }
     <span class="dim updated" id="updated"></span>
     <button class="btn" id="refresh-btn" data-act="refresh" title="Refresh the PRs (⌘R reloads the app)"><span data-icon="refresh"></span>Refresh</button>
     <button class="btn" id="overnight-btn" data-act="overnight-start" title="Review your eligible PRs with up to two writers at once. Fixes and pushes changes, checks CI, never merges or releases. Stops starting new work nine hours after the batch starts.">Run reviews</button>
-    <button class="btn" id="auto-btn" data-act="auto-toggle" aria-pressed="false" disabled title="When someone asks for your review after Auto thermo is turned on, the PR's checks pass, and your Claude session and weekly usage are below the limits you set, PR Inbox starts Thermo &amp; approve on it by itself. It publishes like the button: an approval, or a request for changes, from your account. One at a time. PRs that were already waiting stay as they are.">Auto thermo</button>
+    <button class="btn" id="auto-btn" data-act="auto-toggle" aria-pressed="false" disabled title="When someone asks for your review after Auto thermo is turned on, the PR's checks pass, and your Claude session and weekly usage are below the limits you set, PR Inbox starts Thermo &amp; approve on it by itself, for the PR's first review only. It publishes like the button: an approval, or a request for changes, from your account. One at a time. PRs that were already waiting stay as they are.">Auto thermo</button>
     <button class="btn btn-primary" data-act="triage"><span data-icon="sparkle"></span>Triage with Claude</button>
   </div>
   <div class="wrap filters" id="filters"></div>

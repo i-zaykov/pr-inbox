@@ -1,6 +1,6 @@
 # Auto thermo
 
-PR Inbox can start Thermo & approve by itself. When someone asks for your review on their PR, its checks pass and your Claude plan has room, the server starts the same run as the **Thermo & approve** button. The app window can close while the background server works.
+PR Inbox can start Thermo & approve by itself for the first review of a PR. When someone asks for your review on their PR, its checks pass and your Claude plan has room, the server starts the same run as the **Thermo & approve** button. The app window can close while the background server works.
 
 Auto thermo is on by default. It takes only requests for your review sent after it was turned on. PRs that were already waiting on you when it first ran, or when you last turned it back on, stay as they are until someone asks for your review on them again.
 
@@ -10,9 +10,9 @@ A PR qualifies when all of these hold:
 
 - It is under Waiting on you, open and not a draft, and it asks for your review, by name or through one of your teams. Being assigned to it is not enough.
 - That request came after Auto thermo was turned on, or the PR was opened after that.
-- Thermo & approve may take it. You have not approved it, or someone asked for your review again since.
+- Thermo & approve may take it.
 - You have not skipped it since the latest request for your review.
-- Its head commit is new to you. You have not reviewed that commit, Auto thermo has not started on it, and no Thermo & approve run you clicked covers it.
+- Nobody has reviewed it from your account yet. You have left no review on GitHub, Auto thermo has never started on it, and no Thermo & approve run you clicked reviewed it, on any commit.
 - No other Claude run is working on it.
 - Every check has passed. Running, failing or missing checks make it wait.
 
@@ -20,7 +20,7 @@ Right before a start, PR Inbox reads the PR from GitHub again, checks all of the
 
 A PR that will start once something clears shows an **Auto thermo next** tag. Its tooltip says what it waits for: checks, usage, or another automatic run.
 
-When the author pushes a new commit and asks for your review again, the new head qualifies again. Asking again without a new commit does not.
+Only the first review is automatic. Once a review from you is on the PR, a new commit or a new request for your review does not start it again. Review again with **Thermo & approve** when you choose to.
 
 ## The usage gate
 
@@ -34,7 +34,7 @@ If usage cannot be read, nothing starts, and the notice says why. That covers a 
 
 ## What it publishes
 
-The run is the button's own run, and PR Inbox publishes its result from your account the same way. A passing review approves the PR, with any non-blocking notes in its text. Blocking findings request changes and list what to fix. When the author asks again, the next review starts from your earlier review and the changes since it. It blocks only on unfixed findings, on code changed since, or on a confirmed bug with real impact, so findings do not arrive one round at a time. An incomplete review publishes nothing. Before publishing, PR Inbox checks that the reviewed commits still match the PR. Before it approves, it also checks that every check passed.
+The run is the button's own run, and PR Inbox publishes its result from your account the same way. A passing review approves the PR, with any non-blocking notes in its text. Blocking findings request changes and list what to fix. When you start a later Thermo & approve by hand, that review starts from your earlier one and the changes since it. It blocks only on unfixed findings, on code changed since, or on a confirmed bug with real impact, so findings do not arrive one round at a time. An incomplete review publishes nothing. Before publishing, PR Inbox checks that the reviewed commits still match the PR. Before it approves, it also checks that every check passed.
 
 Each automatic start sends a macOS notification naming the PR and your session percentage. The run's card says it started automatically.
 

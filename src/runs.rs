@@ -994,12 +994,12 @@ impl Store {
         self.inner.lock().unwrap().runs.iter().any(|r| r.status.active() && r.pr_url.as_deref() == Some(pr_url))
     }
 
-    /// An Approve run on this PR prepared a review of the head `head_sha`, so the automatic start never repeats a
-    /// click on the same head. A run that ended before preparing never reviewed anything, and one still queued
-    /// counts through `busy_on`.
-    pub fn approved_head(&self, pr_url: &str, head_sha: &str) -> bool {
+    /// An Approve run on this PR prepared a review of any of its heads, so the automatic start, which takes only a
+    /// PR's first review, leaves it to you. A run that ended before preparing never reviewed anything, and one still
+    /// queued counts through `busy_on`.
+    pub fn approved(&self, pr_url: &str) -> bool {
         self.inner.lock().unwrap().runs.iter().filter(|r| r.kind == Kind::Approve && r.pr_url.as_deref() == Some(pr_url))
-            .any(|r| r.review_job.as_ref().and_then(|j| j.prepared.as_ref()).is_some_and(|p| p.scope.head_sha == head_sha))
+            .any(|r| r.review_job.as_ref().is_some_and(|j| j.prepared.is_some()))
     }
 
     fn approving(&self, pr_url: &str) -> bool {
@@ -1429,7 +1429,7 @@ mod tests {
     }
 
     #[test]
-    fn a_clicked_approval_covers_only_the_head_it_prepared() {
+    fn a_clicked_approval_covers_every_head_of_its_pr() {
         let url = "https://github.com/o/r/pull/7";
         let prepared = |head: &str| {
             let mut job = Job::new(true);
@@ -1439,16 +1439,14 @@ mod tests {
         };
         let approve = |id: &str, started_at: u64, job: Option<Job>, status: Status| Run { id: id.into(), kind: Kind::Approve, pr_url: Some(url.into()), started_at, review_job: job, status, ..Default::default() };
         let store = |runs| Store { inner: Mutex::new(Inner { runs, overnight_limit: false, dirty: false, urgent: false, last_save: Instant::now() }), preparing: tokio::sync::Mutex::new(()) };
-        let (old, new) = ("b".repeat(40), "c".repeat(40));
-        let s = store(vec![approve("done", 500, Some(prepared(&old)), Status::Done)]);
-        assert!(s.approved_head(url, &old));
-        assert!(!s.approved_head(url, &new), "a snapshot of another commit does not cover this head");
-        assert!(!s.approved_head("https://github.com/o/r/pull/8", &old));
+        let s = store(vec![approve("done", 500, Some(prepared(&"b".repeat(40))), Status::Done)]);
+        assert!(s.approved(url), "a review of an older head still covers the PR");
+        assert!(!s.approved("https://github.com/o/r/pull/8"));
         assert!(!s.busy_on(url));
         let s = store(vec![approve("failed", 500, Some(Job::new(true)), Status::Failed)]);
-        assert!(!s.approved_head(url, &new), "a run that failed before preparing reviewed nothing");
+        assert!(!s.approved(url), "a run that failed before preparing reviewed nothing");
         let s = store(vec![approve("queued", 500, Some(Job::new(true)), Status::Queued)]);
-        assert!(!s.approved_head(url, &new));
+        assert!(!s.approved(url));
         assert!(s.busy_on(url), "a queued run holds the PR instead");
         assert_eq!(s.approve_run_since(url, 500).unwrap()["id"], "queued");
         assert!(s.approve_run_since(url, 501).is_none());
