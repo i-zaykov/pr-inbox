@@ -645,10 +645,17 @@ pub async fn fetch_linked_pr(url: &str) -> Result<LinkedPr, String> {
 #[derive(Default)]
 pub struct Cache {
     last: std::sync::Mutex<Option<Snapshot>>,
+    /// One fetch at a time: a caller that waited on another's fetch takes its answer instead of fetching again.
+    flight: tokio::sync::Mutex<()>,
 }
 
 impl Cache {
     pub async fn refresh(&self) -> Result<Snapshot, String> {
+        let asked = now_ms();
+        let _turn = self.flight.lock().await;
+        if let Some(snap) = self.last.lock().unwrap().clone().filter(|s| s.fetched_at >= asked) {
+            return Ok(snap);
+        }
         let snap = fetch_prs().await?;
         *self.last.lock().unwrap() = Some(snap.clone());
         Ok(snap)

@@ -134,20 +134,13 @@ fn last_list_file() -> std::path::PathBuf {
     crate::util::data_dir().join("last-prs.json")
 }
 
-async fn list_prs(State(app): State<Shared>, Query(q): Query<ListQuery>) -> Response {
-    if q.cached {
-        return match tokio::fs::read_to_string(last_list_file()).await {
-            Ok(text) => ([(header::CONTENT_TYPE, "application/json")], text).into_response(),
-            Err(_) => StatusCode::NO_CONTENT.into_response(),
-        };
-    }
-    let snap = match app.prs.refresh().await {
-        Ok(snap) => snap,
-        Err(e) => return err(StatusCode::BAD_GATEWAY, e),
-    };
+/// Fetches the PR list for the page, saves it as the last list, and removes PR Inbox's worktrees of PRs on
+/// neither list (merged, closed, or no longer yours to look at).
+async fn fresh_list(store: &Arc<Store>, prs: &Cache) -> Result<String, String> {
+    let snap = prs.refresh().await?;
     if snap.warning.is_none() {
         let open: HashSet<(String, u64)> = snap.mine.iter().chain(&snap.others).map(|p| (p.name.clone(), p.number)).collect();
-        let store = app.store.clone();
+        let store = store.clone();
         tokio::spawn(async move { workspace::sweep(open, store.active_dirs()).await });
     }
     let ledger = reviews::load();
@@ -156,6 +149,34 @@ async fn list_prs(State(app): State<Shared>, Query(q): Query<ListQuery>) -> Resp
     if let Err(e) = crate::util::write_atomic(&last_list_file(), &text) {
         eprintln!("Could not save last-prs.json: {e}");
     }
+    Ok(text)
+}
+
+/// Refreshes the saved list every minute, so a window opened or polling reads one under a minute old without
+/// waiting on GitHub. Four inbox queries a minute cost GitHub's GraphQL limit about 5% of its hourly 5,000.
+pub async fn keep_warm(store: Arc<Store>, prs: Arc<Cache>) {
+    let mut every = tokio::time::interval(Duration::from_secs(60));
+    every.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    loop {
+        every.tick().await;
+        if let Err(e) = fresh_list(&store, &prs).await {
+            eprintln!("Could not refresh the PR list: {e}");
+        }
+    }
+}
+
+async fn list_prs(State(app): State<Shared>, Query(q): Query<ListQuery>) -> Response {
+    let text = if q.cached {
+        match tokio::fs::read_to_string(last_list_file()).await {
+            Ok(text) => text,
+            Err(_) => return StatusCode::NO_CONTENT.into_response(),
+        }
+    } else {
+        match fresh_list(&app.store, &app.prs).await {
+            Ok(text) => text,
+            Err(e) => return err(StatusCode::BAD_GATEWAY, e),
+        }
+    };
     ([(header::CONTENT_TYPE, "application/json")], text).into_response()
 }
 
@@ -360,6 +381,9 @@ async fn login(Path(tool): Path<String>) -> Response {
 #[derive(Deserialize)]
 struct DetailReq {
     url: String,
+    /// The head commit the page's list knows, for the panel's checks.
+    #[serde(default)]
+    sha: Option<String>,
 }
 
 /// owner/name and the number of a URL `is_pr_url` passed.
@@ -374,7 +398,7 @@ async fn pr_detail(Query(req): Query<DetailReq>) -> Response {
         return err(StatusCode::BAD_REQUEST, "Not a pull request URL");
     }
     let (repo, number) = repo_and_number(&req.url);
-    match detail::fetch(&repo, number).await {
+    match detail::fetch(&repo, number, req.sha.as_deref()).await {
         Ok(d) => Json(d).into_response(),
         Err(e) => err(StatusCode::BAD_GATEWAY, e),
     }
@@ -542,7 +566,7 @@ mod tests {
     #[tokio::test]
     async fn a_summary_link_is_validated_before_contacting_github() {
         for url in ["https://evil.test/o/r/pull/7", "https://github.com/o/r/pull/0", "file:///etc/passwd", "pr-inbox://merge"] {
-            assert_eq!(pr_summary(Query(DetailReq { url: url.into() })).await.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(pr_summary(Query(DetailReq { url: url.into(), sha: None })).await.status(), StatusCode::BAD_REQUEST);
         }
     }
 

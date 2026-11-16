@@ -1372,12 +1372,33 @@ async function loadDetail(force = false) {
   const have = store[pr.url]
   if (!force && have?.data && have.updatedAt === pr.updatedAt && Date.now() - have.at < 60000) return
   try {
-    const data = await api(`/api/${path}?url=${encodeURIComponent(pr.url)}`)
-    store[pr.url] = { data, at: Date.now(), updatedAt: pr.updatedAt }
+    store[pr.url] = await fetchDetail(pr, path)
   } catch (e) {
     store[pr.url] = { ...have, error: e.message, at: Date.now() }
   }
   renderDetail()
+}
+
+const fetchDetail = async (pr, path = 'pr-detail') => ({
+  data: await api(`/api/${path}?url=${encodeURIComponent(pr.url)}${path === 'pr-detail' && pr.headSha ? `&sha=${pr.headSha}` : ''}`),
+  at: Date.now(), updatedAt: pr.updatedAt,
+})
+
+// Loads the panel of every PR on the board whose copy is missing or from an earlier update, three at a time,
+// so opening or stepping to a PR shows it at once instead of after GitHub's 1 to 2 s. The open PR loads itself.
+let prefetching = false
+async function prefetchDetails() {
+  if (prefetching || document.hidden || !S.data) return
+  prefetching = true
+  try {
+    const todo = boardPrs().filter(pr => pr.url !== findPr(S.detail)?.url && S.details[pr.url]?.updatedAt !== pr.updatedAt)
+    const worker = async () => {
+      for (let pr; (pr = todo.shift());) {
+        try { S.details[pr.url] = await fetchDetail(pr) } catch {}
+      }
+    }
+    await Promise.all([worker(), worker(), worker()])
+  } finally { prefetching = false }
 }
 
 async function loadPeople(repo) {
@@ -1732,17 +1753,25 @@ function renderAll() { renderHeader(); renderNotice(); renderBoard(); renderDial
 
 let retried = false
 let prsSeq = 0
-// The list the server last sent, drawn at once while the fresh one (about 3 s of GitHub queries) loads. The
-// header keeps saying it is loading, and the fresh answer replaces it.
+// The list the server saved last. Its background refresh keeps it under a minute old, so opening the window and
+// the regular poll read it at once instead of waiting about 3 s on GitHub. A list older than what the page shows
+// is ignored. Returns whether the page now shows a list under 90 s old.
+const FRESH_MS = 90000
 async function loadCachedPrs() {
   try {
     const data = await api('/api/prs?cached=true')
-    if (S.data || !data.mine) return
-    S.data = data
-    loadPlans()
-    renderAll()
+    if (data.mine && !(S.data?.fetchedAt >= data.fetchedAt)) {
+      S.data = data
+      S.error = null
+      loadPlans()
+      loadDetail()
+      prefetchDetails()
+      renderAll()
+    }
   } catch {}
+  return !!S.data && Date.now() - S.data.fetchedAt < FRESH_MS
 }
+const loadRecentPrs = async () => { if (!await loadCachedPrs()) loadPrs() }
 async function loadPrs() {
   // Responses can arrive out of order; only the newest request's answer is used.
   const seq = ++prsSeq
@@ -1755,6 +1784,7 @@ async function loadPrs() {
     S.error = null
     loadPlans()
     loadDetail()
+    prefetchDetails()
     // GitHub works out mergeability lazily: ask once more so "CI running" rows settle.
     retried = !retried && S.data.settling
     if (retried) setTimeout(loadPrs, 6000)
@@ -2393,10 +2423,10 @@ document.addEventListener('keydown', ev => {
 document.querySelectorAll('[data-icon]').forEach(el => { el.outerHTML = icon(el.dataset.icon) })
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return
-  if (S.data && Date.now() - S.data.fetchedAt > 60000) loadPrs()
+  loadRecentPrs()
   loadRuns()
 })
-setInterval(() => { if (!document.hidden) loadPrs() }, 120000)
+setInterval(() => { if (!document.hidden) loadRecentPrs() }, 30000)
 setInterval(() => { if (S.data && !S.loading) $('#updated').textContent = `Updated ${ago(S.data.fetchedAt)}` }, 15000)
 
 renderAll()
@@ -2406,8 +2436,7 @@ window.addEventListener('pr-inbox:open', ({ detail }) => {
 })
 const initialPr = new URLSearchParams(location.search).get('pr')
 if (initialPr) openLinkedPr(initialPr)
-loadCachedPrs()
-loadPrs()
+loadRecentPrs()
 loadRuns()
 loadOvernight()
 loadAuto()

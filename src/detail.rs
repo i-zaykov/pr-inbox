@@ -65,16 +65,29 @@ fn entry(v: &Value, state: String, at: &str) -> Entry {
     }
 }
 
-/// `repo` is owner/name, checked by the caller.
-pub async fn fetch(repo: &str, number: u64) -> Result<Detail, String> {
-    let pr = api(&format!("repos/{repo}/pulls/{number}")).await?;
-    let sha = text(&pr["head"]["sha"]);
+/// `repo` is owner/name, checked by the caller. `head`, the head commit the inbox list knows, lets the check runs
+/// load next to the PR instead of after it, so the panel waits on one round trip to GitHub instead of two.
+pub async fn fetch(repo: &str, number: u64, head: Option<&str>) -> Result<Detail, String> {
+    let head = head.filter(|sha| sha.len() == 40 && sha.chars().all(|c| c.is_ascii_hexdigit()));
     let paths = [
         format!("repos/{repo}/pulls/{number}/reviews?per_page=100"),
         format!("repos/{repo}/issues/{number}/comments?per_page=100"),
-        format!("repos/{repo}/commits/{sha}/check-runs?per_page=100"),
     ];
-    let (reviews, comments, checks) = tokio::join!(api(&paths[0]), api(&paths[1]), api(&paths[2]));
+    let checks_of = |sha: &str| format!("repos/{repo}/commits/{sha}/check-runs?per_page=100");
+    let (pr, reviews, comments, checks) = match head {
+        Some(sha) => {
+            let (pull, checks) = (format!("repos/{repo}/pulls/{number}"), checks_of(sha));
+            tokio::join!(api(&pull), api(&paths[0]), api(&paths[1]), api(&checks))
+        }
+        None => {
+            let pr = api(&format!("repos/{repo}/pulls/{number}")).await?;
+            let sha = text(&pr["head"]["sha"]);
+            let checks = checks_of(&sha);
+            let (reviews, comments, checks) = tokio::join!(api(&paths[0]), api(&paths[1]), api(&checks));
+            (Ok(pr), reviews, comments, checks)
+        }
+    };
+    let pr = pr?;
     let mut timeline: Vec<Entry> = Vec::new();
     for r in reviews?.as_array().into_iter().flatten() {
         let state = text(&r["state"]);
