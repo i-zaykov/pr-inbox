@@ -464,8 +464,8 @@ const ADDRESS = 'Address the review comments on this PR. Read every unresolved r
 
 // Every PR action, by verb: its menu label, the Claude run (kind and note) or gh action it performs, and
 // who gets it. `writes` verbs need a PR a run may push to (the server marks fork PRs and branch names an
-// auto-mode run will not type as not writable), `mine` verbs are for your own PRs, `when` adds a test of
-// its own, and a `confirm` dialog asks first.
+// auto-mode run will not type as not writable), `mine` verbs are for your own PRs, `theirs` is the extra test
+// someone else's PR must pass, `when` adds a test of its own, and a `confirm` dialog asks first.
 const VERBS = {
   fix: { menu: 'Fix CI with Claude', run: 'fix', writes: true },
   rebase: { menu: 'Rebase with Claude', run: 'rebase', writes: true },
@@ -489,21 +489,23 @@ const VERBS = {
     go: 'Review it' } },
   update: { menu: 'Update branch', gh: 'update', doing: 'Updating', did: 'Updated' },
   ready: { menu: 'Mark ready for review', gh: 'ready', when: pr => pr.isDraft, doing: 'Marking ready', did: 'Marked ready' },
-  merge: { menu: 'Merge…', gh: 'merge', mine: true, doing: 'Merging', did: 'Merged', confirm: {
+  // Someone else's PR merges once GitHub would take it as it stands and you can push to its repo.
+  merge: { menu: 'Merge…', gh: 'merge', theirs: pr => pr.mergeLane === 'ready' && pr.canWrite, doing: 'Merging', did: 'Merged', confirm: {
     title: pr => `Merge ${short(pr)}?`,
     body: pr => `<p style="margin:0">Squash-merges <b>${esc(pr.title)}</b> into <code>${esc(pr.base)}</code>. If anyone pushes to it first, GitHub refuses the merge.</p>`,
     go: 'Merge' } },
   // Opens the Merge & release dialog, which says how the PR's repo releases before anything runs.
-  ship: { menu: 'Merge & release…', mine: true, ship: true, when: pr => releasable(pr.repo) },
-  // Your admin rights merge past a missing approval or a branch behind its base. The server decides which
-  // PRs qualify (adminMergeable) and checks again before merging; the dialog spells out what it skips.
-  admin: { menu: 'Admin merge…', gh: 'admin-merge', mine: true, ship: true, when: pr => pr.adminMergeable, doing: 'Admin merging', did: 'Merged' },
+  ship: { menu: 'Merge & release…', theirs: pr => pr.mergeLane === 'ready' && pr.canWrite, ship: true, when: pr => releasable(pr.repo) },
+  // Your admin rights merge past a missing approval or a branch behind its base; on someone else's PR only past
+  // the branch. The server decides which PRs qualify (adminMergeable) and checks again before merging; the
+  // dialog spells out what it skips.
+  admin: { menu: 'Admin merge…', gh: 'admin-merge', ship: true, when: pr => pr.adminMergeable, doing: 'Admin merging', did: 'Merged' },
   close: { menu: 'Close…', gh: 'close', danger: true, doing: 'Closing', did: 'Closed', confirm: {
     title: pr => `Close ${short(pr)}?`,
     body: pr => `<p style="margin:0">Closes <b>${esc(pr.title)}</b> without merging. You can reopen it on GitHub.</p>`,
     go: 'Close PR' } },
 }
-const can = (v, pr, mine) => { const V = VERBS[v]; return (!pr.state || pr.state === 'OPEN') && (!V.writes || pr.writable) && (!V.mine || mine) && (!V.when || V.when(pr)) }
+const can = (v, pr, mine) => { const V = VERBS[v]; return (!pr.state || pr.state === 'OPEN') && (!V.writes || pr.writable) && (!V.mine || mine) && (mine || !V.theirs || V.theirs(pr)) && (!V.when || V.when(pr)) }
 
 // One model per bucket: the server decides each PR's lane; the bucket says what you can do with it.
 // `action` is [label, verb] for the row's primary button; `bulk` runs its verb on the whole bucket; `theirs`
@@ -726,16 +728,18 @@ const idle = pr => !doneFor(keyOf(pr)) && !runFor(pr) && !S.busy[keyOf(pr)]
 const actionable = id => lanePrs(id).filter(pr => idle(pr) && (!LANE[id].bulk || can(LANE[id].bulk.verb, pr, !LANE[id].theirs)))
 const repoName = repo => repo.split('/').pop()
 const releasable = repo => ['tag', 'workflow'].includes(S.plans[repo]?.method)
-// Your idle Ready PRs that Merge & release can take: in `repo`, or in every repo that releases.
-const shippable = repo => lanePrs('ready').filter(pr => (!repo || pr.repo === repo) && idle(pr) && can('ship', pr, true))
-const mergeable = repo => lanePrs('ready').filter(pr => pr.repo === repo && idle(pr) && can('merge', pr, true))
-// Your idle PRs a tick can take: a Ready one merges the normal way, and one held back only by its approval or by
-// being behind takes an admin merge.
-const pickable = pr => !LANE[pr.lane].theirs && idle(pr) && (pr.lane === 'ready' && can('merge', pr, true) || can('admin', pr, true))
+const isMine = pr => !LANE[pr.lane].theirs
+// Idle PRs GitHub would merge as they stand that Merge & release can take: in `repo`, someone else's included, or
+// your Ready ones in every repo that releases.
+const shippable = repo => (repo ? boardPrs() : lanePrs('ready')).filter(pr => pr.mergeLane === 'ready' && (!repo || pr.repo === repo) && idle(pr) && can('ship', pr, isMine(pr)))
+const mergeable = repo => boardPrs().filter(pr => pr.mergeLane === 'ready' && pr.repo === repo && idle(pr) && can('merge', pr, isMine(pr)))
+// Idle PRs a tick can take: one GitHub would merge as it stands merges the normal way, and one held back only by
+// its approval or by being behind takes an admin merge. Someone else's PR counts once you may merge it.
+const pickable = pr => idle(pr) && (pr.mergeLane === 'ready' && can('merge', pr, isMine(pr)) || can('admin', pr, isMine(pr)))
 // The ticked PRs (or just `from`) that are still pickable, split the way the Merge & release dialog takes them.
 function picks(from = [...S.picked].map(findPr)) {
   const prs = from.filter(pr => pr && pickable(pr))
-  return { prs, keys: prs.filter(pr => pr.lane === 'ready').map(keyOf), admin: prs.filter(pr => pr.lane !== 'ready').map(keyOf) }
+  return { prs, keys: prs.filter(pr => pr.mergeLane === 'ready').map(keyOf), admin: prs.filter(pr => pr.mergeLane !== 'ready').map(keyOf) }
 }
 // Why GitHub would not merge a PR yet, in a few words: what keeps it out of Merge & release.
 function blockers(pr) {
@@ -945,9 +949,9 @@ function row(pr, lane, byRepo = false, linked = false) {
     mine ? `<span class="branch" title="${esc(pr.head)}">${esc(pr.head)}</span>` : '',
   ].filter(Boolean).join(' · ')
   const author = mine ? '' : `<span class="author" title="Opened by @${esc(pr.author)}"><img src="https://github.com/${esc(encodeURIComponent(pr.author))}.png?size=40" alt="" loading="lazy" onerror="this.remove()">@${esc(pr.author)}</span>`
-  // Your PRs that cannot merge yet keep a greyed-out tick that says why.
+  // Your PRs that cannot merge yet keep a greyed-out tick that says why. Someone else's gets one only once you may merge it.
   const why = done || (!idle(pr) ? 'Something is running on it' : `Not ready to merge: ${blockers(pr)}`)
-  const pick = !mine || linked ? '<span class="pick" aria-hidden="true"></span>'
+  const pick = linked || !mine && !pickable(pr) ? '<span class="pick" aria-hidden="true"></span>'
     : `<input type="checkbox" class="pick" data-act="pick" aria-label="Select ${esc(short(pr))}"${S.picked.has(k) ? ' checked' : ''}${pickable(pr) ? '' : ` disabled title="${esc(why)}"`}>`
   return `<article class="pr${done ? ' done' : ''}${mine ? '' : ' theirs'}${S.detail === k ? ' selected' : ''}" aria-current="${S.detail === k}" data-enter="pr:${esc(k)}" data-key="${esc(k)}">
     <div class="row">
@@ -966,12 +970,21 @@ function row(pr, lane, byRepo = false, linked = false) {
 // The buttons beside the lane's own action: one of merge and release, resolve and review, an admin merge, the
 // review-then-approve of someone else's PR or the relevance check, whichever this PR can take (else its GitHub
 // page), then the thermo-nuclear review until the current commit has passed it. Every other action is in the menu.
+// Someone else's PR offers its review first, then the merge once GitHub would take it.
 function extras(pr, verb, mine) {
   const button = (v, body, tip) => `<button class="btn" data-act="verb" data-verb="${v}" title="${esc(tip)}">${body}</button>`
-  const one = verb === 'merge' && can('ship', pr, mine) ? button('ship', `${icon('rocket', 14)}Merge &amp; release`, `${shipTip(pr.repo)} (⌘↵)`)
+  const approve = () => button('approve', `${icon('sparkle', 14)}Thermo &amp; approve`, `Claude reviews without changing the PR. PR Inbox checks the reviewed commits and publishes approval or requests changes. You confirm first.`)
+  const admin = () => button('admin', `${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}`, mine
+    ? 'Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.'
+    : `Merge @${pr.author}'s approved PR with your admin rights, past its out-of-date branch. You confirm first.`)
+  const one = !mine ? (can('approve', pr, mine) ? approve()
+      : can('ship', pr, mine) ? button('ship', `${icon('rocket', 14)}Merge &amp; release`, `${shipTip(pr.repo)}, for @${pr.author} (⌘↵)`)
+      : can('merge', pr, mine) ? button('merge', 'Merge', `Squash-merge it for @${pr.author}. You confirm first.`)
+      : can('admin', pr, mine) ? admin()
+      : `<a class="btn" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open on GitHub</a>`)
+    : verb === 'merge' && can('ship', pr, mine) ? button('ship', `${icon('rocket', 14)}Merge &amp; release`, `${shipTip(pr.repo)} (⌘↵)`)
     : can('resolve', pr, mine) ? button('resolve', `${icon('sparkle', 14)}Resolve &amp; review`, `One Claude run: merge ${pr.base} and resolve the conflicts, push, then run the thermo-nuclear review on the result. It stops before the review if the conflicts need you.`)
-    : can('admin', pr, mine) ? button('admin', `${icon('shield', 14)}Admin merge${releasable(pr.repo) ? ' &amp; release' : ''}`, 'Merge with your admin rights, past the missing approval or the out-of-date branch. You confirm first.')
-    : can('approve', pr, mine) ? button('approve', `${icon('sparkle', 14)}Thermo &amp; approve`, `Claude reviews without changing the PR. PR Inbox checks the reviewed commits and publishes approval or requests changes. You confirm first.`)
+    : can('admin', pr, mine) ? admin()
     : verb !== 'relevance' && can('relevance', pr, mine) ? button('relevance', 'Still relevant?', `Claude checks it against today's ${pr.base}: closes it if it no longer matters, rescues it if it does`)
     : `<a class="btn" href="${esc(pr.url)}" target="_blank" rel="noreferrer">Open on GitHub</a>`
   const thermo = can('thermo', pr, mine) ? button('thermo', `${icon('sparkle', 14)}Review, fix &amp; push`, "Run the thermo-nuclear review, fix findings, push changes, and review the final code again") : ''
@@ -1130,7 +1143,7 @@ function repoActions(repo) {
 // The repo's release standing for its heading: the next and latest tag (or its workflow), and the commits its
 // branch holds unreleased, linked to GitHub's comparison.
 function releaseInfo(repo) {
-  if (!S.data.mine.some(pr => pr.repo === repo)) return []
+  if (!S.data.mine.some(pr => pr.repo === repo) && !S.plans[repo] && !S.planErrors[repo]) return []
   const p = S.plans[repo]
   const ver = v => `<span class="ver">${esc(v)}</span>`
   if (!p) return [S.planErrors[repo] ? `<span title="${esc(S.planErrors[repo])}">could not check how it releases</span>` : 'checking how it releases…']
@@ -1615,7 +1628,8 @@ function drawDialog() {
     const title = !merges ? (d.repo ? `Release ${repoName(d.repo)}${S.plans[d.repo]?.next ? ' ' + S.plans[d.repo].next : ''}?` : 'Nothing ticked to merge')
       : merges === 1 ? `${word}${andRelease} ${short(prs[0] || forced[0])}?` : `${word} ${merges}${releasing.length ? ` and release ${plural(releasing.length, 'repo')}` : ''}?`
     const how = !merges ? '' : `<p style="margin:0">Squash-merges each PR, pinned to the commit shown here. ${d.release ? 'A repo releases after its merges, and only when at least one of them went through.' : 'Nothing is released.'}</p>`
-    const warn = forced.length ? `<p class="admin-warn"><b>Admin merge skips branch protection</b> for ${forced.map(pr => '#' + pr.number).join(', ')}. Nobody has approved ${forced.length === 1 ? 'it' : 'them'} yet, and a PR behind its base merges without CI having run on today's base. GitHub still refuses in a repo that enforces its rules for admins.</p>` : ''
+    const unapproved = forced.filter(pr => pr.review === 'REVIEW_REQUIRED').length
+    const warn = forced.length ? `<p class="admin-warn"><b>Admin merge skips branch protection</b> for ${forced.map(pr => '#' + pr.number).join(', ')}. ${unapproved ? `${plural(unapproved, 'PR')} ${unapproved === 1 ? 'has' : 'have'} no approval yet, and a` : 'A'} PR behind its base merges without CI having run on today's base. GitHub still refuses in a repo that enforces its rules for admins.</p>` : ''
     const go = checking ? 'Checking releases…' : `${forced.length ? 'Admin merge' : merges || !d.repo ? 'Merge' : 'Release'}${merges && releasing.length ? ' &amp; release' : ''}`
     $('#dialog').innerHTML = frame(title, `<div class="ship-list">${groups}</div>${how}${warn}`,
       `${cancel}<button class="btn ${forced.length ? 'btn-admin' : 'btn-primary'}" data-act="ship-go" ${checking || (!merges && !(d.repo && releasing.length)) ? 'disabled' : ''}>${go}</button>`)
@@ -1653,10 +1667,10 @@ function outNote(repo, merging, d) {
   return out.length ? `<p>Not included: ${esc(leftOutText(out))}.</p>` : ''
 }
 
-// Your idle PRs in `repo` the dialog offers for an admin merge: the ones the server marked as held back
-// only by their approval or by being behind, and not already merging the normal way. `d.offer`, when set,
-// narrows them to the PRs you ticked on the board.
-const adminCandidates = (repo, d) => S.data.mine.filter(pr => pr.repo === repo && pr.adminMergeable && idle(pr) && !d.keys.includes(keyOf(pr))
+// Idle PRs in `repo` the dialog offers for an admin merge: the ones the server marked as held back only by
+// their approval or by being behind (someone else's only by being behind), and not already merging the normal
+// way. `d.offer`, when set, narrows them to the PRs you ticked on the board.
+const adminCandidates = (repo, d) => allPrs().filter(pr => pr.repo === repo && pr.adminMergeable && idle(pr) && !d.keys.includes(keyOf(pr))
   && (!d.offer || d.offer.includes(keyOf(pr))))
 
 // What a Merge & release dialog takes: PRs merging normally, PRs ticked for an admin merge, and their repos.

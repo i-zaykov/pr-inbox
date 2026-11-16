@@ -17,7 +17,7 @@ use std::time::Duration;
 
 use crate::auto_review::{self, AutoReview};
 use crate::detail;
-use crate::github::{is_pr_url, Cache, PrAction, Snapshot};
+use crate::github::{is_pr_url, Cache, Lane, PrAction, Snapshot};
 use crate::overview;
 use crate::overnight;
 use crate::release::{self, Releases};
@@ -272,12 +272,14 @@ async fn create_run(State(app): State<Shared>, Json(req): Json<NewRun>) -> Respo
 }
 
 /// How each repo you have a PR in releases: its method, latest tag, the next one and what is unreleased.
+/// Someone else's PR you may merge, the normal way or by admin merge, brings its repo in too.
 async fn release_plans(State(app): State<Shared>) -> Response {
     let snap = match app.prs.recent().await {
         Ok(snap) => snap,
         Err(e) => return err(StatusCode::BAD_GATEWAY, e),
     };
-    let repos: BTreeSet<String> = snap.mine.iter().map(|p| p.repo.clone()).collect();
+    let theirs = snap.others.iter().filter(|p| (p.can_write && p.merge_lane == Lane::Ready) || p.admin_mergeable);
+    let repos: BTreeSet<String> = snap.mine.iter().chain(theirs).map(|p| p.repo.clone()).collect();
     Json(app.releases.plans(repos.into_iter().collect()).await).into_response()
 }
 

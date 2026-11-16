@@ -129,10 +129,15 @@ pub struct Pr {
     pub failing: Vec<Check>,
     /// Decided when the list is fetched: `classify` for your PRs, Waiting for the rest.
     pub lane: Lane,
+    /// The lane the PR would take if it were yours, from `classify`. On your PRs it equals `lane`. On someone
+    /// else's, Ready means GitHub merges it as it stands, so you may merge it for them.
+    pub merge_lane: Lane,
     /// A run may change code and push on this PR: `write_refusal` has nothing against it.
     pub writable: bool,
     /// You are an admin of the repo, so you can merge past its branch protection.
     pub can_admin: bool,
+    /// You can push to the repo, which GitHub requires of anyone merging a PR in it.
+    pub can_write: bool,
     /// An admin merge may take this PR: `admin_merge_refusal` has nothing against it.
     pub admin_mergeable: bool,
     /// Your latest review on it, if any. An approval may still leave the PR needing someone else's.
@@ -176,13 +181,15 @@ impl Pr {
     }
 
     /// Why an admin merge, which skips the required approval and the up-to-date rule, must not take this
-    /// PR. It is only for your own PR whose checks all passed, with no conflicts and no changes requested,
-    /// held back by nothing but a missing approval or a branch behind its base.
+    /// PR. It is only for a PR whose checks all passed, with no conflicts and no changes requested, held
+    /// back by nothing but a missing approval or a branch behind its base. Someone else's PR keeps its
+    /// approval rule: an admin merge only takes it past a branch behind its base.
     pub fn admin_merge_refusal(&self) -> Option<&'static str> {
         if !self.can_admin {
             return Some("You are not an admin of this repo");
         }
-        if !matches!(self.lane, Lane::Behind | Lane::Review) {
+        let theirs = self.is_theirs();
+        if !matches!(if theirs { self.merge_lane } else { self.lane }, Lane::Behind | Lane::Review) {
             return Some("Only a PR held back by its approval or by being behind its base can be admin-merged");
         }
         if self.ci != Ci::Pass {
@@ -197,7 +204,15 @@ impl Pr {
         if self.merge_state != MergeState::Behind && self.review != Some(ReviewDecision::ReviewRequired) {
             return Some("Another branch rule blocks it, not its approval or being behind");
         }
+        if theirs && (self.merge_state != MergeState::Behind || self.review == Some(ReviewDecision::ReviewRequired)) {
+            return Some("Someone else's PR needs its approval first; an admin merge only takes it past being behind");
+        }
         None
+    }
+
+    /// Someone else's PR: it sits in a lane of other people's PRs.
+    pub fn is_theirs(&self) -> bool {
+        matches!(self.lane, Lane::Waiting | Lane::Reviewed)
     }
 
     /// Why the Approve run, which reviews someone else's PR and approves it from your account, must not take
@@ -373,8 +388,11 @@ fn to_pr(n: &Value) -> Pr {
         ci,
         failing,
         lane: Lane::default(),
+        // Decided with the lane; until then the PR reads as not ready.
+        merge_lane: Lane::Checking,
         writable: false,
         can_admin: text(n, "/repository/viewerPermission") == "ADMIN",
+        can_write: matches!(text(n, "/repository/viewerPermission").as_str(), "WRITE" | "MAINTAIN" | "ADMIN"),
         admin_mergeable: false,
         // No review, or a state this binary does not know, reads as None.
         your_review: serde_json::from_value(n["viewerLatestReview"]["state"].clone()).ok(),
@@ -482,6 +500,7 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
     let mut mine: Vec<Pr> = nodes("/data/viewer/pullRequests/nodes").iter().filter(live).map(to_pr).collect();
     for pr in &mut mine {
         pr.lane = classify(pr, &stale_cutoff, &fresh_cutoff);
+        pr.merge_lane = pr.lane;
         pr.admin_mergeable = pr.admin_merge_refusal().is_none();
     }
     // Each PR is listed once, in the first list that has it: a reviewed PR whose review is requested again waits.
@@ -494,7 +513,9 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
         .map(|(n, lane, requested)| {
             // GitHub's review-requested search includes team requests. Assignment alone is not a request.
             let mut pr = Pr { lane, review_requested: requested || user_requested(&n, &login), asked_at: asked_at(&n, &login), team_asked_at: team_asked_at(&n), ..to_pr(&n) };
+            pr.merge_lane = classify(&pr, &stale_cutoff, &fresh_cutoff);
             pr.approvable = pr.approve_refusal().is_none();
+            pr.admin_mergeable = pr.admin_merge_refusal().is_none();
             pr
         })
         .collect();
@@ -542,9 +563,10 @@ fn parse_linked_pr(doc: &Value) -> Result<LinkedPr, String> {
         return Err("Pull request not found, or your GitHub account cannot access it".into());
     }
     let mut pr = to_pr(node);
+    let now = now_ms();
+    pr.merge_lane = classify(&pr, &utc_iso(now.saturating_sub(7 * 86_400_000)), &utc_iso(now.saturating_sub(15 * 60_000)));
     if pr.author == login {
-        let now = now_ms();
-        pr.lane = classify(&pr, &utc_iso(now.saturating_sub(7 * 86_400_000)), &utc_iso(now.saturating_sub(15 * 60_000)));
+        pr.lane = pr.merge_lane;
         pr.admin_mergeable = pr.admin_merge_refusal().is_none();
     } else {
         pr.review_requested = user_requested(node, &login);
@@ -562,6 +584,7 @@ fn parse_linked_pr(doc: &Value) -> Result<LinkedPr, String> {
         pr.asked_at = asked_at(node, &login);
         if team_pending { pr.asked_at = pr.asked_at.max(team_asked_at); }
         pr.approvable = pr.approve_refusal().is_none();
+        pr.admin_mergeable = pr.admin_merge_refusal().is_none();
     }
     if pr.state != "OPEN" || node["repository"]["isArchived"] == true {
         pr.writable = false;
@@ -978,6 +1001,56 @@ mod tests {
         for (name, pr) in refused {
             assert!(pr.admin_merge_refusal().is_some(), "{name}");
         }
+    }
+
+    #[test]
+    fn someone_elses_pr_is_admin_merged_only_past_being_behind_once_approved() {
+        let theirs = || Pr {
+            can_admin: true,
+            lane: Lane::Reviewed,
+            merge_lane: Lane::Behind,
+            ci: Ci::Pass,
+            mergeable: Mergeable::Mergeable,
+            merge_state: MergeState::Behind,
+            review: Some(ReviewDecision::Approved),
+            ..Default::default()
+        };
+        assert_eq!(theirs().admin_merge_refusal(), None);
+        assert_eq!(Pr { lane: Lane::Waiting, review: None, ..theirs() }.admin_merge_refusal(), None);
+        let refused = [
+            ("needs approval and behind", Pr { review: Some(ReviewDecision::ReviewRequired), ..theirs() }),
+            ("needs approval only", Pr { merge_lane: Lane::Review, merge_state: MergeState::Blocked, review: Some(ReviewDecision::ReviewRequired), ..theirs() }),
+            ("ready anyway", Pr { merge_lane: Lane::Ready, merge_state: MergeState::Clean, ..theirs() }),
+            ("changes requested", Pr { merge_lane: Lane::Changes, review: Some(ReviewDecision::ChangesRequested), ..theirs() }),
+            ("not an admin", Pr { can_admin: false, ..theirs() }),
+        ];
+        for (name, pr) in refused {
+            assert!(pr.admin_merge_refusal().is_some(), "{name}");
+        }
+    }
+
+    #[test]
+    fn someone_elses_green_approved_pr_is_ready_for_you_to_merge() {
+        let mut doc = linked_doc("someone", "OPEN");
+        let node = &mut doc["data"]["repository"]["pullRequest"];
+        node["mergeable"] = json!("MERGEABLE");
+        node["mergeStateStatus"] = json!("CLEAN");
+        node["reviewDecision"] = json!("APPROVED");
+        node["commits"] = json!({ "nodes": [{ "commit": { "committedDate": "2026-01-01T00:00:00Z", "statusCheckRollup": { "state": "SUCCESS", "contexts": { "nodes": [] } } } }] });
+        node["repository"]["viewerPermission"] = json!("WRITE");
+        let pr = parse_linked_pr(&doc).unwrap().pr;
+        assert!(pr.is_theirs());
+        assert_eq!(pr.merge_lane, Lane::Ready);
+        assert!(pr.can_write && !pr.admin_mergeable);
+        doc["data"]["repository"]["pullRequest"]["mergeStateStatus"] = json!("BEHIND");
+        assert_eq!(parse_linked_pr(&doc).unwrap().pr.merge_lane, Lane::Behind);
+    }
+
+    #[test]
+    fn write_rights_come_from_the_viewers_repo_permission() {
+        let pr = |perm: &str| to_pr(&json!({ "url": "u", "repository": { "viewerPermission": perm } }));
+        assert!(pr("WRITE").can_write && pr("MAINTAIN").can_write && pr("ADMIN").can_write);
+        assert!(!pr("TRIAGE").can_write && !pr("READ").can_write);
     }
 
     #[test]

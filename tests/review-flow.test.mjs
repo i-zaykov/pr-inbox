@@ -56,6 +56,21 @@ test('approval availability follows the server verdict even for assigned Waiting
   assert.equal(context.allowed('approve', { ...pr, isCrossRepo: true, writable: false }, false), true, 'a read-only review can inspect a fork')
 })
 
+test("someone else's PR merges only once GitHub would take it and you can push to its repo", () => {
+  const { context } = setup()
+  context.releasable = () => true
+  const ready = { ...pr, mergeLane: 'ready', canWrite: true }
+  for (const v of ['merge', 'ship']) {
+    assert.equal(context.allowed(v, ready, false), true, v)
+    assert.equal(context.allowed(v, { ...ready, canWrite: false }, false), false, `${v} without write access`)
+    assert.equal(context.allowed(v, { ...ready, mergeLane: 'behind' }, false), false, `${v} while behind`)
+    assert.equal(context.allowed(v, { ...ready, state: 'MERGED' }, false), false, `${v} once merged`)
+  }
+  assert.equal(context.allowed('admin', { ...pr, adminMergeable: true }, false), true, 'the server decides admin merges')
+  assert.equal(context.allowed('admin', { ...pr, adminMergeable: false }, false), false)
+  assert.equal(context.allowed('merge', { ...pr, lane: 'ready' }, true), true, 'your own PR keeps its merge')
+})
+
 test('starting a linked PR review opens its progress, result, full log and Stop in the panel', async () => {
   const { S, context, rendered, requests } = setup()
   await context.startRun('approve', pr)
