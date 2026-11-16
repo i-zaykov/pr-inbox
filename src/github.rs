@@ -269,15 +269,16 @@ const FIELDS: &str = r#"
     ... on StatusContext { context state targetUrl createdAt }
   } } } } } }"#;
 
-fn query() -> String {
-    format!(
-        r#"query($q1: String!, $q2: String!, $q3: String!) {{
-  viewer {{ login pullRequests(states: OPEN, first: 100, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ {FIELDS} }} }} }}
-  reviews: search(query: $q1, type: ISSUE, first: 50) {{ nodes {{ ... on PullRequest {{ {FIELDS} }} }} }}
-  assigned: search(query: $q2, type: ISSUE, first: 50) {{ nodes {{ ... on PullRequest {{ {FIELDS} }} }} }}
-  reviewed: search(query: $q3, type: ISSUE, first: 50) {{ nodes {{ ... on PullRequest {{ {FIELDS} }} }} }}
-}}"#
-    )
+/// The inbox as four GraphQL queries GitHub answers side by side: your open PRs, then one search per list of other
+/// people's PRs. One query holding all four took about 5 s, since GitHub resolves its fields one after another.
+fn queries() -> [(&'static str, String, Option<&'static str>); 4] {
+    let search = |alias: &str| format!(r#"query($q: String!) {{ {alias}: search(query: $q, type: ISSUE, first: 50) {{ nodes {{ ... on PullRequest {{ {FIELDS} }} }} }} }}"#);
+    [
+        ("viewer", format!(r#"query {{ viewer {{ login pullRequests(states: OPEN, first: 100, orderBy: {{field: UPDATED_AT, direction: DESC}}) {{ nodes {{ {FIELDS} }} }} }} }}"#), None),
+        ("reviews", search("reviews"), Some("is:open is:pr archived:false review-requested:@me")),
+        ("assigned", search("assigned"), Some("is:open is:pr archived:false assignee:@me -author:@me")),
+        ("reviewed", search("reviewed"), Some("is:open is:pr archived:false reviewed-by:@me -author:@me")),
+    ]
 }
 
 const FAILED: [&str; 6] = ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ACTION_REQUIRED", "ERROR", "CANCELLED"];
@@ -524,26 +525,44 @@ pub fn parse_snapshot(doc: &Value) -> Result<Snapshot, String> {
 }
 
 pub async fn fetch_prs() -> Result<Snapshot, String> {
-    let q = format!("query={}", query());
-    let out = sh(
-        "gh",
-        &[
-            "api", "graphql", "-f", &q,
-            "-f", "q1=is:open is:pr archived:false review-requested:@me",
-            "-f", "q2=is:open is:pr archived:false assignee:@me -author:@me",
-            "-f", "q3=is:open is:pr archived:false reviewed-by:@me -author:@me",
-        ],
-        Duration::from_secs(60),
-    )
+    let answers = futures_join(queries().into_iter().map(|(alias, query, search)| async move {
+        let q = format!("query={query}");
+        let filter = search.map(|s| format!("q={s}"));
+        let mut args = vec!["api", "graphql", "-f", q.as_str()];
+        if let Some(f) = &filter { args.extend(["-f", f.as_str()]); }
+        (alias, sh("gh", &args, Duration::from_secs(60)).await)
+    }))
     .await;
-    // gh exits 1 when the response carries any GraphQL error, even next to complete data.
-    match serde_json::from_str::<Value>(&out.stdout) {
-        Ok(doc) if doc.get("data").is_some() => parse_snapshot(&doc),
-        _ => {
-            let msg = first_line(&out.stderr);
-            Err(if msg.is_empty() { format!("gh exited with {}", out.code) } else { msg })
+    // gh exits 1 when the response carries any GraphQL error, even next to complete data. Your own PRs must
+    // load; a search that fails only leaves a warning, like a GraphQL error inside one query did before.
+    let mut data = serde_json::Map::new();
+    let mut errors = Vec::new();
+    for (alias, out) in answers {
+        match serde_json::from_str::<Value>(&out.stdout) {
+            Ok(doc) if doc["data"].get(alias).is_some() => {
+                data.insert(alias.into(), doc["data"][alias].clone());
+                errors.extend(doc["errors"].as_array().cloned().unwrap_or_default());
+            }
+            _ => {
+                let msg = first_line(&out.stderr);
+                let msg = if msg.is_empty() { format!("gh exited with {}", out.code) } else { msg };
+                if alias == "viewer" { return Err(msg); }
+                errors.push(serde_json::json!({ "message": msg }));
+            }
         }
     }
+    let mut doc = serde_json::json!({ "data": data });
+    if !errors.is_empty() { doc["errors"] = Value::Array(errors); }
+    parse_snapshot(&doc)
+}
+
+/// Runs the futures side by side and returns their results in order.
+async fn futures_join<F: std::future::Future + Send + 'static>(futures: impl IntoIterator<Item = F>) -> Vec<F::Output>
+where F::Output: Send + 'static {
+    let handles: Vec<_> = futures.into_iter().map(tokio::spawn).collect();
+    let mut out = Vec::with_capacity(handles.len());
+    for h in handles { out.push(h.await.expect("inbox query task panicked")); }
+    out
 }
 
 #[derive(Serialize)]

@@ -651,11 +651,23 @@ impl Run {
         let mut v = serde_json::to_value(self).unwrap_or_default();
         if let Some(o) = v.as_object_mut() {
             let skip = self.events.len().saturating_sub(LIST_EVENTS);
-            o.insert("events".into(), serde_json::to_value(&self.events[skip..]).unwrap_or_default());
+            let tail = &self.events[skip..];
+            // A run that ended shows only what it said last until its full log opens, so the list carries the
+            // last event of each kind instead of its last 40.
+            let shown: Vec<&Event> = if self.status.active() { tail.iter().collect() } else {
+                tail.iter().enumerate().filter(|(i, e)| !tail[i + 1..].iter().any(|later| later.kind == e.kind)).map(|(_, e)| e).collect()
+            };
+            o.insert("events".into(), serde_json::to_value(shown).unwrap_or_default());
             o.insert("eventCount".into(), self.events.len().into());
             o.insert("stopRequested".into(), self.launch.stop_at.is_some().into());
             o.insert("sessionStarted".into(), self.session_cwd.is_some().into());
             o.remove("queued");
+            // The list is polled every few seconds: the prompt and the review job's report and history come
+            // with the single run (`get`) the full log loads. The page reads only the job's stage here.
+            o.remove("prompt");
+            if let Some(job) = o.get_mut("reviewJob").filter(|j| j.is_object()) {
+                *job = serde_json::json!({ "stage": job["stage"] });
+            }
         }
         v
     }
@@ -1479,6 +1491,19 @@ mod tests {
         let run = Store::with_approve("a", url, 5, Status::Done, "PASS: approved\nmore").get("a").unwrap();
         assert_eq!(outcome(&run), (Some("a".into()), "done".into(), Some("PASS: approved".into())));
         assert_eq!(outcome(&serde_json::json!({})), (None, "interrupted".into(), None));
+    }
+
+    #[test]
+    fn the_polled_list_leaves_out_the_prompt_and_trims_an_ended_run_to_its_last_events() {
+        let ev = |kind, text: &str| Event { at: 0, kind, text: text.into() };
+        let events = vec![ev(EventKind::Text, "a"), ev(EventKind::Tool, "t1"), ev(EventKind::Text, "b"), ev(EventKind::Result, "done")];
+        let ended = Run { status: Status::Done, prompt: "long prompt".into(), events: events.clone(), ..run() }.summary();
+        assert!(ended.get("prompt").is_none());
+        let texts: Vec<&str> = ended["events"].as_array().unwrap().iter().map(|e| e["text"].as_str().unwrap()).collect();
+        assert_eq!(texts, ["t1", "b", "done"]);
+        assert_eq!(ended["eventCount"], 4);
+        let running = Run { events, ..run() }.summary();
+        assert_eq!(running["events"].as_array().unwrap().len(), 4);
     }
 
     #[test]

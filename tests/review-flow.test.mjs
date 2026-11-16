@@ -16,7 +16,7 @@ const run = () => ({ id: 'review-1', kind: 'approve', title: 'Review linked PR',
 
 function setup() {
   const S = { data: { mine: [], others: [] }, linkedPrs: { 'owner/repo#7': pr }, detail: 'owner/repo#7',
-    runs: [], runsOpen: {}, busy: {}, drafts: {}, fullLog: {}, logOpen: {}, replyOpen: {}, replyDrafts: {}, openRun: null }
+    runs: [], runsOpen: {}, busy: {}, drafts: {}, fullLog: {}, prompts: {}, logOpen: {}, replyOpen: {}, replyDrafts: {}, openRun: null }
   const requests = []
   const rendered = { html: '' }
   let remoteRuns = []

@@ -554,7 +554,7 @@ const S = {
   auto: null, autoBusy: false,
   // How each of your repos releases (from /api/releases), why one could not be checked, and releases in flight.
   plans: {}, planErrors: {}, releasing: {},
-  group: recall('group') === 'repo' ? 'repo' : 'lane', show: recall('show') === 'needs' ? 'needs' : 'all', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, flash: null,
+  group: recall('group') === 'repo' ? 'repo' : 'lane', show: recall('show') === 'needs' ? 'needs' : 'all', sorts: {}, lane: 'all', summaryOpen: false, menu: null, dialog: null, openRun: null, logOpen: {}, fullLog: {}, prompts: {}, flash: null,
   // The PRs whose runs show as cards under the row instead of the newest one on a line.
   runsOpen: {},
   // The PR open in the side panel, by key, and each PR's full detail as fetched, by URL.
@@ -1511,7 +1511,7 @@ function runCard(r) {
     const events = S.fullLog[r.id] || r.events
     const partial = !S.fullLog[r.id] && r.eventCount > r.events.length ? `<div class="ev-note">Showing the last ${r.events.length} of ${r.eventCount} events.</div>` : ''
     const log = S.logOpen[r.id] ? `<div class="log" data-run="${id}">
-        ${r.prompt ? `<div class="ev-note">Prompt</div><div class="ev-you" style="align-self:stretch;max-width:none">${esc(r.prompt)}</div>` : ''}${partial}
+        ${S.prompts[r.id] ? `<div class="ev-note">Prompt</div><div class="ev-you" style="align-self:stretch;max-width:none">${esc(S.prompts[r.id])}</div>` : ''}${partial}
         ${events.map(e => `<div class="ev-${e.kind}">${e.kind === 'text' || e.kind === 'result' ? inline(e.text) : esc(e.text)}</div>`).join('')}
       </div>` : ''
     const reply = sessionActions && S.replyOpen[r.id] && !active(r) ? `<div class="reply">
@@ -1732,6 +1732,17 @@ function renderAll() { renderHeader(); renderNotice(); renderBoard(); renderDial
 
 let retried = false
 let prsSeq = 0
+// The list the server last sent, drawn at once while the fresh one (about 3 s of GitHub queries) loads. The
+// header keeps saying it is loading, and the fresh answer replaces it.
+async function loadCachedPrs() {
+  try {
+    const data = await api('/api/prs?cached=true')
+    if (S.data || !data.mine) return
+    S.data = data
+    loadPlans()
+    renderAll()
+  } catch {}
+}
 async function loadPrs() {
   // Responses can arrive out of order; only the newest request's answer is used.
   const seq = ++prsSeq
@@ -1928,7 +1939,7 @@ async function autoSettings(change) {
 async function loadFullLog(id) {
   try {
     const r = await api(`/api/runs/${id}`)
-    if (S.logOpen[id]) { S.fullLog[id] = r.events; renderRuns() }
+    if (S.logOpen[id]) { S.fullLog[id] = r.events; S.prompts[id] = r.prompt; renderRuns() }
   } catch {}
 }
 
@@ -2395,6 +2406,7 @@ window.addEventListener('pr-inbox:open', ({ detail }) => {
 })
 const initialPr = new URLSearchParams(location.search).get('pr')
 if (initialPr) openLinkedPr(initialPr)
+loadCachedPrs()
 loadPrs()
 loadRuns()
 loadOvernight()

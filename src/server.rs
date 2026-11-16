@@ -123,7 +123,24 @@ struct PrList {
 /// Fetches the PR list for the page, and removes PR Inbox's worktrees of PRs on neither list (merged,
 /// closed, or no longer waiting on you) when nothing in them is unsaved. A list GitHub sent only part of
 /// skips that, so a PR that failed to load keeps its worktree.
-async fn list_prs(State(app): State<Shared>) -> Response {
+#[derive(Deserialize)]
+struct ListQuery {
+    #[serde(default)]
+    cached: bool,
+}
+
+/// The last PR list sent, kept on disk so a newly opened window draws it at once while the fresh one loads.
+fn last_list_file() -> std::path::PathBuf {
+    crate::util::data_dir().join("last-prs.json")
+}
+
+async fn list_prs(State(app): State<Shared>, Query(q): Query<ListQuery>) -> Response {
+    if q.cached {
+        return match tokio::fs::read_to_string(last_list_file()).await {
+            Ok(text) => ([(header::CONTENT_TYPE, "application/json")], text).into_response(),
+            Err(_) => StatusCode::NO_CONTENT.into_response(),
+        };
+    }
     let snap = match app.prs.refresh().await {
         Ok(snap) => snap,
         Err(e) => return err(StatusCode::BAD_GATEWAY, e),
@@ -135,7 +152,11 @@ async fn list_prs(State(app): State<Shared>) -> Response {
     }
     let ledger = reviews::load();
     let thermo = reviews::standings(&ledger, &snap.mine).await;
-    Json(PrList { snap, thermo }).into_response()
+    let text = serde_json::to_string(&PrList { snap, thermo }).unwrap_or_default();
+    if let Err(e) = crate::util::write_atomic(&last_list_file(), &text) {
+        eprintln!("Could not save last-prs.json: {e}");
+    }
+    ([(header::CONTENT_TYPE, "application/json")], text).into_response()
 }
 
 async fn list_runs(State(app): State<Shared>) -> Json<Value> {
