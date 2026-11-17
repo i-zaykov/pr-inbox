@@ -65,6 +65,12 @@ Apply these standards:
 - Prefer atomic related updates when partial completion creates invalid state. Consider parallel execution only for independent work when it simplifies the flow and preserves ordering requirements.
 - Split a module when doing so removes coupling or gives a concept a clear home. File length is never a finding on its own, at any threshold.
 
+Search for an existing owner before you accept new logic.
+For every new function, hook, constant, type and formatting or rounding rule in the diff, search the pinned target code for one that already does the same job.
+Look in the shared folders (such as `src/lib`, `packages/` or `macros/`) and in the sibling modules the change resembles.
+A match that the change re-implements is a duplicated-canonical-logic finding: name the existing helper, its current users and the call that replaces the copy.
+Run this search on every review, first review and re-review alike, so two reviews of the same change find the same duplicates.
+
 For each proposed simplification, identify the concrete complexity it removes and why behavior stays intact.
 Do not block a change on a speculative rewrite, personal naming preference, or a cosmetic nit. List those as notes.
 Do not move complexity between files and call that a simplification.
