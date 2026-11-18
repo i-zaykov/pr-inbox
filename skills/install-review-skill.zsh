@@ -18,6 +18,12 @@ destinations=(
 )
 count=0
 for destination in "${destinations[@]}"; do
+  # A directory symlink (e.g. ~/.codex/skills/<name> -> the canonical folder) makes this path the
+  # canonical file itself. Linking it would replace the policy with a link to itself.
+  if [[ "${destination:h:A}" == "${canonical:h:A}" ]]; then
+    (( ++count ))
+    continue
+  fi
   if [[ -L "$destination" && "$(readlink "$destination")" == "$canonical" ]]; then
     (( ++count ))
     continue
