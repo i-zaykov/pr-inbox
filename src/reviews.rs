@@ -503,7 +503,8 @@ fn settle(checks: Checks, age_ms: u64) -> Queued {
 }
 
 async fn settle_queued(file: &Path) {
-    let queued = fs::read_to_string(file).ok().and_then(|text| serde_json::from_str::<Review>(&text).ok());
+    let read = fs::read_to_string(file).ok();
+    let queued = read.as_deref().and_then(|text| serde_json::from_str::<Review>(text).ok());
     let Some((review, scope)) = queued.and_then(|r| r.scope.clone().map(|s| (r, s))) else {
         let _ = fs::remove_file(file);
         return;
@@ -526,6 +527,10 @@ async fn settle_queued(file: &Path) {
         },
     };
     let name = format!("{}#{}", scope.repo, scope.number);
+    // A newer `record-review` may have replaced the file while GitHub answered. Leave that one alone.
+    if decision != Queued::Wait && fs::read_to_string(file).ok() != read {
+        return;
+    }
     match decision {
         Queued::Wait => {}
         Queued::Record => {

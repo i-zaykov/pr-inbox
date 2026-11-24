@@ -306,15 +306,18 @@ pub const CHECKS_POLL: Duration = Duration::from_secs(30);
 const HANDOFF_CONTEXT: &str = "thermo-nuclear-review";
 const HANDOFF_PREFIX: &str = "Needs a human:";
 
-/// Reduces `gh pr checks --json name,state,description` to one verdict. A PR with no checks at all
-/// cannot be verified, so it counts as failing, and so does a state this code does not know.
+pub(crate) fn is_handoff(name: &str, state: &str, description: Option<&str>) -> bool {
+    name == HANDOFF_CONTEXT && state == "PENDING" && description.is_some_and(|d| d.starts_with(HANDOFF_PREFIX))
+}
+
+/// Reduces `gh pr checks --json name,state,description` to one verdict. A PR with no checks yet counts
+/// as running: right after a push GitHub has not registered them, and a wait gives up after an hour
+/// anyway. A state this code does not know counts as failing.
 fn judge_checks(checks: &[Value]) -> Checks {
     let mut verdict = Checks::Passed;
     let mut seen = false;
     for check in checks {
-        let handoff = check["name"] == HANDOFF_CONTEXT && check["state"] == "PENDING"
-            && check["description"].as_str().is_some_and(|d| d.starts_with(HANDOFF_PREFIX));
-        if handoff { continue }
+        if is_handoff(check["name"].as_str().unwrap_or(""), check["state"].as_str().unwrap_or(""), check["description"].as_str()) { continue }
         seen = true;
         match check["state"].as_str() {
             Some("SUCCESS" | "SKIPPED" | "NEUTRAL") => {}
@@ -324,13 +327,21 @@ fn judge_checks(checks: &[Value]) -> Checks {
             _ => verdict = Checks::Failing,
         }
     }
-    if seen { verdict } else { Checks::Failing }
+    if seen { verdict } else { Checks::Running }
 }
 
 pub(crate) async fn checks(url: &str) -> Result<Checks, String> {
     let out = sh("gh", &["pr", "checks", url, "--json", "name,state,description"], Duration::from_secs(30)).await;
     let checks: Vec<Value> = serde_json::from_str(&out.stdout).map_err(|_| "Cannot verify the PR checks; no PASS or approval was published")?;
     Ok(judge_checks(&checks))
+}
+
+/// Prefix of the errors that mean GitHub did not answer, not that the PR is unfit to publish.
+const UNREACHABLE: &str = "GitHub did not answer: ";
+
+/// A failure worth another look while a run waits for checks: nothing was decided or written.
+pub fn is_transient(error: &str) -> bool {
+    error.starts_with(UNREACHABLE)
 }
 
 pub(crate) const CHECKS_FAILING: &str = "Checks are failing or absent. No PASS or approval was published; retry once they have passed";
@@ -407,18 +418,19 @@ pub enum Finished {
 pub async fn finish(prepared: &Prepared, report: &Report, url: &str, approve: bool) -> Result<Finished, String> {
     let scope = &prepared.scope;
     let verdict = report.validate(scope)?;
-    let linked = github::fetch_linked_pr(url).await?;
+    let unreachable = |e: String| format!("{UNREACHABLE}{e}");
+    let linked = github::fetch_linked_pr(url).await.map_err(unreachable)?;
     current(scope, &linked.pr)?;
     if approve && linked.pr.author == linked.login { return Err("You cannot approve your own PR".into()) }
     if verdict == Verdict::Pass {
-        match checks(url).await? {
+        match checks(url).await.map_err(unreachable)? {
             Checks::Passed => {}
             Checks::Running => return Ok(Finished::AwaitingChecks),
             Checks::Failing => return Err(CHECKS_FAILING.into()),
         }
     }
     // Checking CI can take time; re-read the identity immediately before the external write.
-    current(scope, &github::fetch_linked_pr(url).await?.pr)?;
+    current(scope, &github::fetch_linked_pr(url).await.map_err(unreachable)?.pr)?;
     let posted = if approve { Some(submit(scope, report, verdict, &linked.login, &linked.pr.asked_at).await?) } else { None };
     let dir = checkouts_dir().join(scope.repo.split('/').next_back().unwrap_or_default());
     reviews::record_verified(scope, verdict, &report.summary, &dir).await?;
@@ -446,7 +458,15 @@ mod tests {
         for state in ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "SOMETHING_NEW"] {
             assert_eq!(judge_checks(&[check("deploy", "IN_PROGRESS"), check("build", state), check("lint", "PENDING")]), Checks::Failing, "{state}");
         }
-        assert_eq!(judge_checks(&[]), Checks::Failing);
+        // Right after a push GitHub may list no checks yet.
+        assert_eq!(judge_checks(&[]), Checks::Running);
+    }
+
+    #[test]
+    fn only_an_unanswered_github_call_is_worth_another_look() {
+        assert!(is_transient(&format!("{UNREACHABLE}HTTP 502")));
+        assert!(!is_transient(CHECKS_FAILING));
+        assert!(!is_transient("The PR changed during review. Start a new review of its current base and head; nothing was published"));
     }
 
     #[test]
@@ -459,8 +479,8 @@ mod tests {
         assert_eq!(judge_checks(&[build.clone(), status("PENDING", "Review in progress")]), Checks::Running);
         assert_eq!(judge_checks(&[build.clone(), status("FAILURE", "Fail: missing test")]), Checks::Failing);
         assert_eq!(judge_checks(&[build.clone(), json!({ "name": "deploy", "state": "PENDING", "description": "Needs a human: approve the deploy" })]), Checks::Running);
-        // A handoff alone verifies nothing about CI.
-        assert_eq!(judge_checks(&[status("PENDING", "Needs a human: grants a new reader")]), Checks::Failing);
+        // A handoff alone verifies nothing about CI yet.
+        assert_eq!(judge_checks(&[status("PENDING", "Needs a human: grants a new reader")]), Checks::Running);
     }
 
     #[test]

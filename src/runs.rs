@@ -700,10 +700,13 @@ impl Run {
 
 /// Where a run stands, for the batches that follow the runs they started: its id, its status, and the first line
 /// of its last result or error, if it has one.
+/// A run that only waits for checks reads as "waiting", which the batches do not count as active work.
 pub fn outcome(run: &Value) -> (Option<String>, String, Option<String>) {
     let said = run["events"].as_array().and_then(|events| events.iter().rev().find(|e| matches!(e["kind"].as_str(), Some("result" | "error"))))
         .and_then(|e| e["text"].as_str()).map(first_line);
-    (run["id"].as_str().map(String::from), run["status"].as_str().unwrap_or("interrupted").into(), said)
+    let waiting = run["status"] == "running" && run["reviewJob"]["checksSince"].is_u64();
+    let status = if waiting { "waiting".into() } else { run["status"].as_str().unwrap_or("interrupted").into() };
+    (run["id"].as_str().map(String::from), status, said)
 }
 
 // ---------- persistence ----------
@@ -785,7 +788,9 @@ impl Inner {
     /// A writing run waits while another writing run works on the same PR or in the same directory.
     fn busy(&self, run: &Run) -> bool {
         self.runs.iter().any(|r| {
-            r.id != run.id && r.status == Status::Running && r.exclusive() && (r.cwd == run.cwd || (r.pr_url.is_some() && r.pr_url == run.pr_url))
+            // A run waiting for checks runs no session, so it no longer holds the checkout. It still holds its PR.
+            r.id != run.id && r.status == Status::Running && r.exclusive()
+                && ((r.cwd == run.cwd && !r.awaiting_checks()) || (r.pr_url.is_some() && r.pr_url == run.pr_url))
         })
     }
 
@@ -1010,6 +1015,11 @@ impl Store {
                         run.ended_at = Some(now_ms());
                         run.push(EventKind::Result, &text);
                         notify("PR Inbox", &format!("{}: {text}", run.title));
+                    }
+                    // While waiting, GitHub not answering is a missed look: try again until the wait runs out.
+                    Err(error) if current.checks_since.is_some() && review_flow::is_transient(&error) => {
+                        run.push(EventKind::Note, format!("Could not read the PR's checks, trying again: {error}"));
+                        if let Some(error) = run.await_checks(now_ms()) { notify("PR Inbox", &format!("{}: {error}", run.title)); }
                     }
                     Err(error) => {
                         run.status = Status::Failed;
@@ -1621,6 +1631,29 @@ mod tests {
         assert_eq!(r.status, Status::Failed);
         assert_eq!(r.review_job.as_ref().unwrap().stage, Stage::Publishing);
         assert!(!r.awaiting_checks());
+    }
+
+    #[test]
+    fn a_run_waiting_for_checks_frees_its_checkout_but_not_its_pr() {
+        let approval = |id: &str, pr: &str, waiting: bool| {
+            let mut job = Job::new(true);
+            job.stage = Stage::Publishing;
+            job.checks_since = waiting.then_some(1_000);
+            Run { id: id.into(), kind: Kind::Approve, mode: Mode::Plan, cwd: "/repo".into(), pr_url: Some(pr.into()), review_job: Some(job), ..run() }
+        };
+        let inner = |first: Run| Inner { runs: vec![first], overnight_limit: false, dirty: false, urgent: false, last_save: Instant::now() };
+        // Another PR in the same checkout starts while the first one waits for its checks.
+        assert!(!inner(approval("a", "pr/1", true)).busy(&approval("b", "pr/2", false)));
+        assert!(inner(approval("a", "pr/1", false)).busy(&approval("b", "pr/2", false)));
+        // The same PR still waits for it.
+        assert!(inner(approval("a", "pr/1", true)).busy(&approval("b", "pr/1", false)));
+    }
+
+    #[test]
+    fn batches_see_a_run_waiting_for_checks_as_waiting() {
+        let summary = |since: Value| json!({ "id": "r1", "status": "running", "reviewJob": { "stage": "publishing", "checksSince": since }, "events": [] });
+        assert_eq!(outcome(&summary(json!(1_000))).1, "waiting");
+        assert_eq!(outcome(&summary(Value::Null)).1, "running");
     }
 
     #[test]
