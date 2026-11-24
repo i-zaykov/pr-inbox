@@ -10,7 +10,8 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::github::{fetch_linked_pr, is_full_sha, is_pr_url, safe_ref, Ci, Pr};
-use crate::util::{checkouts_dir, data_dir, now_ms, read_json, set_aside, write_atomic, GIT_ENV};
+use crate::review_flow::{self, Checks};
+use crate::util::{checkouts_dir, data_dir, notify, now_ms, read_json, set_aside, write_atomic, GIT_ENV};
 use crate::workspace;
 
 #[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -443,18 +444,141 @@ pub fn record_from_args(args: &[String]) -> Result<String, String> {
         let url = format!("https://github.com/{}/pull/{}", scope.repo, scope.number);
         let linked = fetch_linked_pr(&url).await?;
         verify_pr_scope(scope, &linked.pr)?;
+        // A new verdict for this PR replaces one still waiting for its checks.
+        let _ = fs::remove_file(queue_file(scope));
         if review.verdict == Verdict::Pass {
-            crate::review_flow::checks_pass(&url).await?;
+            match review_flow::checks(&url).await? {
+                Checks::Passed => {}
+                Checks::Running => {
+                    // Take the proof of what was reviewed now, while this checkout still holds that commit.
+                    let patch = tokio::time::timeout(PROOF_TIMEOUT, reviewed_patch(&dir, scope)).await.ok().flatten();
+                    return queue(&Review { patch, ..review.clone() }, scope);
+                }
+                Checks::Failing => return Err(review_flow::CHECKS_FAILING.into()),
+            }
             verify_pr_scope(scope, &fetch_linked_pr(&url).await?.pr)?;
         }
         record_verified(scope, review.verdict, &review.summary, &dir).await
     })
 }
 
+// ---------- a PASS that waits for its checks ----------
+//
+// A standalone review session finishes while CI still runs. Refusing to record made the session wait
+// for CI or forget the record. `record-review` now leaves the PASS here and returns, and the server
+// records it once the checks pass on the same head and base.
+
+fn queue_dir() -> std::path::PathBuf {
+    data_dir().join("pending-reviews")
+}
+
+/// One waiting PASS per PR: a later review of the same PR replaces it.
+fn queue_file(scope: &ReviewScope) -> std::path::PathBuf {
+    queue_dir().join(format!("{}-{}.json", scope.repo.replace('/', "_"), scope.number))
+}
+
+fn queue(review: &Review, scope: &ReviewScope) -> Result<String, String> {
+    fs::create_dir_all(queue_dir()).map_err(|e| e.to_string())?;
+    write_atomic(&queue_file(scope), &serde_json::to_string(review).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    Ok(format!(
+        "Checks are still running. PR Inbox records PASS for {}#pr:{} at {} when they pass, unless the PR's head or base changes first",
+        scope.repo, scope.number, &scope.head_sha[..7]
+    ))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum Queued {
+    Record,
+    Wait,
+    Drop(&'static str),
+}
+
+fn settle(checks: Checks, age_ms: u64) -> Queued {
+    match checks {
+        Checks::Passed => Queued::Record,
+        Checks::Failing => Queued::Drop("its checks failed"),
+        Checks::Running if age_ms > review_flow::CHECKS_WAIT.as_millis() as u64 => Queued::Drop("its checks were still running after an hour"),
+        Checks::Running => Queued::Wait,
+    }
+}
+
+async fn settle_queued(file: &Path) {
+    let queued = fs::read_to_string(file).ok().and_then(|text| serde_json::from_str::<Review>(&text).ok());
+    let Some((review, scope)) = queued.and_then(|r| r.scope.clone().map(|s| (r, s))) else {
+        let _ = fs::remove_file(file);
+        return;
+    };
+    let url = format!("https://github.com/{}/pull/{}", scope.repo, scope.number);
+    let age = now_ms().saturating_sub(review.at);
+    // The PR must still be the one reviewed, both before the checks are read and after.
+    let unchanged = || async { fetch_linked_pr(&url).await.map(|linked| verify_pr_scope(&scope, &linked.pr).is_ok()) };
+    let decision = match unchanged().await {
+        // GitHub not answering is not a verdict: look again, until the wait runs out.
+        Err(_) => settle(Checks::Running, age),
+        Ok(false) => Queued::Drop("the PR changed or closed before its checks passed"),
+        Ok(true) => match settle(review_flow::checks(&url).await.unwrap_or(Checks::Running), age) {
+            Queued::Record => match unchanged().await {
+                Ok(true) => Queued::Record,
+                Ok(false) => Queued::Drop("the PR changed or closed before its checks passed"),
+                Err(_) => Queued::Wait,
+            },
+            other => other,
+        },
+    };
+    let name = format!("{}#{}", scope.repo, scope.number);
+    match decision {
+        Queued::Wait => {}
+        Queued::Record => {
+            let _ = fs::remove_file(file);
+            match record(review) {
+                Ok(line) => notify("PR Inbox", &line),
+                Err(e) => notify("PR Inbox", &format!("{name}: PASS not recorded: {e}")),
+            }
+        }
+        Queued::Drop(why) => {
+            let _ = fs::remove_file(file);
+            notify("PR Inbox", &format!("{name}: PASS not recorded, {why}. Review it again when it is ready"));
+        }
+    }
+}
+
+/// Records each PASS that `record-review` left waiting, once its checks pass.
+pub async fn queue_worker() {
+    let mut every = tokio::time::interval(review_flow::CHECKS_POLL);
+    loop {
+        every.tick().await;
+        let Ok(entries) = fs::read_dir(queue_dir()) else { continue };
+        for entry in entries.flatten() {
+            if entry.path().extension().is_some_and(|e| e == "json") {
+                settle_queued(&entry.path()).await;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::path::PathBuf;
+
+    #[test]
+    fn a_waiting_pass_is_recorded_only_once_its_checks_pass() {
+        let hour = review_flow::CHECKS_WAIT.as_millis() as u64;
+        assert_eq!(settle(Checks::Passed, 0), Queued::Record);
+        // Checks that pass late still count: the PR is verified unchanged before the record.
+        assert_eq!(settle(Checks::Passed, hour * 5), Queued::Record);
+        assert_eq!(settle(Checks::Running, 0), Queued::Wait);
+        assert_eq!(settle(Checks::Running, hour), Queued::Wait);
+        assert!(matches!(settle(Checks::Running, hour + 1), Queued::Drop(why) if why.contains("still running")));
+        assert!(matches!(settle(Checks::Failing, 0), Queued::Drop(why) if why.contains("failed")));
+    }
+
+    #[test]
+    fn each_pr_has_one_waiting_pass() {
+        let scope = |number| ReviewScope { repo: "o/r".into(), number, branch: "feat".into(), base: "main".into(), base_sha: "a".repeat(40), head_sha: "b".repeat(40) };
+        assert_eq!(queue_file(&scope(7)).file_name().unwrap(), "o_r-7.json");
+        assert_ne!(queue_file(&scope(7)), queue_file(&scope(8)));
+    }
     use std::process::Command;
 
     fn pr() -> Pr {
