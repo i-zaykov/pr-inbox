@@ -143,7 +143,7 @@ def case(scenario):
         (root / "bin/osascript").write_text("#!/bin/sh\nexit 0\n")
         (root / "bin/osascript").chmod(0o755)
         (root / "data/state.json").write_text(json.dumps({"lastDigest":datetime.date.today().isoformat()}))
-        fixture = dict(scenario=scenario, head=head, base=base, pending=scenario == "pending", reject=scenario == "rejected")
+        fixture = dict(scenario=scenario, head=head, base=base, pending=scenario in ["pending", "queued"], reject=scenario == "rejected")
         (root / "fixture.json").write_text(json.dumps(fixture))
         (root / "posted.json").write_text("[]")
         with socket.socket() as sock:
@@ -160,13 +160,22 @@ def case(scenario):
             with urllib.request.urlopen(req, timeout=5) as response:
                 return json.load(response)
 
-        def settled(run_id):
-            deadline = time.monotonic() + 25
+        def settled(run_id, seconds=25):
+            deadline = time.monotonic() + seconds
             while time.monotonic() < deadline:
                 run = request("/api/runs/" + run_id)
                 if run["status"] not in ["queued", "running"]: return run
                 time.sleep(0.1)
             raise AssertionError("Review did not settle: " + json.dumps(run))
+
+        def waiting_for_checks(run_id):
+            deadline = time.monotonic() + 25
+            while time.monotonic() < deadline:
+                run = request("/api/runs/" + run_id)
+                if "Waiting for the PR's checks" in json.dumps(run): return run
+                assert run["status"] in ["queued", "running"], run
+                time.sleep(0.1)
+            raise AssertionError("Review never waited for checks: " + json.dumps(run))
 
         try:
             deadline = time.monotonic() + 10
@@ -177,14 +186,46 @@ def case(scenario):
                 except (urllib.error.URLError, TimeoutError):
                     if time.monotonic() > deadline: raise
                     time.sleep(0.1)
+            if scenario == "queued":
+                # A standalone session records its PASS while checks still run: the command queues it
+                # and returns, and the server records it once they pass.
+                checkout = root / "checkouts/r"
+                git(checkout, "checkout", "-q", "feat", env=env)
+                cli = subprocess.run([str(BINARY), "record-review", "--repo", "o/r", "--pr", "7", "--branch", "feat",
+                    "--base", "main", "--base-sha", base, "--sha", head, "--verdict", "pass", "--summary", "No blockers"],
+                    cwd=checkout, env=env, capture_output=True, text=True, timeout=30)
+                assert cli.returncode == 0 and "Checks are still running" in cli.stdout, (cli.stdout, cli.stderr)
+                assert list((root / "data/pending-reviews").glob("*.json"))
+                assert not (root / "data/reviews.json").exists()
+                fixture["pending"] = False
+                (root / "fixture.json").write_text(json.dumps(fixture))
+                deadline = time.monotonic() + 60
+                while not (root / "data/reviews.json").exists():
+                    assert time.monotonic() < deadline, "The queued PASS was never recorded"
+                    time.sleep(0.2)
+                ledger = json.loads((root / "data/reviews.json").read_text())
+                assert any(r.get("scope", {}).get("headSha") == head and r["verdict"] == "pass" for r in ledger.values()), ledger
+                assert not list((root / "data/pending-reviews").glob("*.json"))
+                print(f"PASS {scenario}", flush=True)
+                return
             body = {"kind":"thermo" if scenario == "repair" else "approve", "url":"https://github.com/o/r/pull/7"}
-            run = settled(request("/api/runs", body)["id"])
-            expected = "failed" if scenario in ["stale", "incomplete", "pending", "ambiguous", "rejected"] else "done"
+            started = request("/api/runs", body)["id"]
+            if scenario == "pending":
+                # A passed review keeps its result while checks run, then publishes by itself.
+                run = waiting_for_checks(started)
+                assert run["status"] == "running", run
+                assert not json.loads((root / "posted.json").read_text())
+                assert not (root / "data/reviews.json").exists()
+                fixture["pending"] = False
+                (root / "fixture.json").write_text(json.dumps(fixture))
+                run = settled(started, 60)
+            else:
+                run = settled(started)
+            expected = "failed" if scenario in ["stale", "incomplete", "ambiguous", "rejected"] else "done"
             assert run["status"] == expected, (scenario, run)
             posted = json.loads((root / "posted.json").read_text())
-            assert len(posted) == (1 if scenario in ["success", "ambiguous", "superseded", "rereview"] else 0), (scenario, posted)
-            if scenario in ["pending", "ambiguous", "rejected"]:
-                fixture["pending"] = False
+            assert len(posted) == (1 if scenario in ["success", "pending", "ambiguous", "superseded", "rereview"] else 0), (scenario, posted)
+            if scenario in ["ambiguous", "rejected"]:
                 fixture["reject"] = False
                 (root / "fixture.json").write_text(json.dumps(fixture))
                 request("/api/runs/" + run["id"] + "/retry", {})
@@ -235,5 +276,5 @@ def case(scenario):
 
 
 if __name__ == "__main__":
-    for scenario in ["success", "repair", "stale", "incomplete", "pending", "ambiguous", "rejected", "superseded", "rereview"]:
+    for scenario in ["success", "repair", "stale", "incomplete", "pending", "queued", "ambiguous", "rejected", "superseded", "rereview"]:
         case(scenario)

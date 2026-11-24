@@ -201,6 +201,9 @@ pr-inbox record-review --repo OWNER/REPO --pr NUMBER --branch HEAD_BRANCH \
 ```
 
 Use the installed PR Inbox binary or its full application path.
+Run it as soon as the verdict exists, and do not wait for CI to finish first.
+With checks still running, the command queues a PASS and PR Inbox records it once they pass on the same head and base.
+Failing checks refuse a PASS.
 If the binary is unavailable or rejects the identity, report that the result was not recorded.
 Do not fall back to a legacy command that omits the PR or base identity.
 Do not record `incomplete` as PASS or misrepresent it as a completed review.

@@ -1517,17 +1517,20 @@ function runCard(r) {
   const sessionActions = !r.reviewJob || r.reviewJob.stage === 'repair'
   // Claude Code reports an API-price estimate on every run; it is only money spent when the run used an API key.
   const billed = r.costUsd && r.apiKeySource && r.apiKeySource !== 'none' ? `$${r.costUsd.toFixed(2)} API` : ''
-  const status = active(r) && r.stopRequested ? 'stopping' : r.status
+  // A review that passed while checks still run is done working: it only waits to publish.
+  const waiting = active(r) && r.reviewJob?.stage === 'publishing' && r.reviewJob.checksSince ? r.events.findLast(e => e.kind === 'note') : null
+  const status = active(r) && r.stopRequested ? 'stopping' : waiting ? 'waiting for checks' : r.status
   const meta = [status, dur((r.endedAt || Date.now()) - r.startedAt), billed, `${r.mode} mode`, r.auto ? 'started automatically' : ''].filter(Boolean).join(' · ')
   let body = ''
   // Collapsed cards say what the run is doing now (and how recently it moved), or what it said last.
   const said = lastSaid(r)
   const doing = active(r) ? r.events.findLast(e => e.kind === 'text' || e.kind === 'tool') : null
   const preview = open ? ''
+    : waiting ? `<div class="run-preview">${esc(firstLine(waiting.text))}</div>`
     : doing ? `<div class="run-preview">${esc(doing.kind === 'tool' ? `Running ${firstLine(doing.text)}` : firstLine(doing.text))}<span class="run-pulse"> · active ${esc(ago(doing.at))}</span></div>`
     : said ? `<div class="run-preview">${esc(firstLine(said.text))}</div>` : ''
   if (open) {
-    const shown = said || r.events.findLast(e => e.kind === 'text') || r.events.findLast(e => e.kind === 'tool' || e.kind === 'note')
+    const shown = waiting || said || r.events.findLast(e => e.kind === 'text') || r.events.findLast(e => e.kind === 'tool' || e.kind === 'note')
     const output = shown ? (shown.kind === 'tool' ? `Working: ${esc(shown.text)}` : inline(shown.text)) : 'Starting…'
     const events = S.fullLog[r.id] || r.events
     const partial = !S.fullLog[r.id] && r.eventCount > r.events.length ? `<div class="ev-note">Showing the last ${r.events.length} of ${r.eventCount} events.</div>` : ''

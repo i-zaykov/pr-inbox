@@ -29,13 +29,19 @@ pub struct Job {
     /// The failed review that started the latest repair round, so the next review checks it instead of starting over.
     #[serde(default)]
     pub previous: Option<Report>,
+    /// When the wait for the PR's checks began. Saved, so a restart keeps the same deadline.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checks_since: Option<u64>,
+    /// The earliest time to read the checks again. Not saved: after a restart the first look is immediate.
+    #[serde(skip)]
+    pub checks_retry_at: u64,
     #[serde(skip)]
     pub busy: bool,
 }
 
 impl Job {
     pub fn new(approve: bool) -> Self {
-        Self { stage: if approve { Stage::Preparing } else { Stage::Repair }, prepared: None, report: None, receipt: None, rounds: 0, previous: None, busy: false }
+        Self { stage: if approve { Stage::Preparing } else { Stage::Repair }, prepared: None, report: None, receipt: None, rounds: 0, previous: None, checks_since: None, checks_retry_at: 0, busy: false }
     }
 }
 
@@ -286,13 +292,67 @@ fn receipt(value: &Value, scope: &ReviewScope, verdict: Verdict) -> Result<Recei
     Ok(Receipt { id: value["id"].as_u64().filter(|n| *n > 0).ok_or("GitHub returned no review ID")?, url: url.into(), commit: scope.head_sha.clone(), state: expected.into() })
 }
 
-pub(crate) async fn checks_pass(url: &str) -> Result<(), String> {
-    let out = sh("gh", &["pr", "checks", url, "--json", "name,state"], Duration::from_secs(30)).await;
-    let checks: Vec<Value> = serde_json::from_str(&out.stdout).map_err(|_| "Cannot verify the PR checks; no PASS or approval was published")?;
-    if out.code != 0 || checks.is_empty() || checks.iter().any(|c| !matches!(c["state"].as_str(), Some("SUCCESS" | "SKIPPED" | "NEUTRAL"))) {
-        return Err("Checks are failing, pending or absent. No PASS or approval was published; retry once checks have passed".into());
+/// What a PR's checks say right now.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Checks { Passed, Running, Failing }
+
+/// How long a passed review waits for running checks before it gives up, and how often it looks.
+pub const CHECKS_WAIT: Duration = Duration::from_secs(60 * 60);
+pub const CHECKS_POLL: Duration = Duration::from_secs(30);
+
+// Wire contract with the thermo-nuclear review skill in bi-dbt and cloudrun-monorepo, the same one their
+// PR feed reads: this status, pending with this prefix, waits on a reviewer and not on CI. Counting it
+// as a running check would keep the reviewer it waits for from ever publishing an approval.
+const HANDOFF_CONTEXT: &str = "thermo-nuclear-review";
+const HANDOFF_PREFIX: &str = "Needs a human:";
+
+pub(crate) fn is_handoff(name: &str, state: &str, description: Option<&str>) -> bool {
+    name == HANDOFF_CONTEXT && state == "PENDING" && description.is_some_and(|d| d.starts_with(HANDOFF_PREFIX))
+}
+
+/// Reduces `gh pr checks --json name,state,description` to one verdict. A PR with no checks yet counts
+/// as running: right after a push GitHub has not registered them, and a wait gives up after an hour
+/// anyway. A state this code does not know counts as failing.
+fn judge_checks(checks: &[Value]) -> Checks {
+    let mut verdict = Checks::Passed;
+    let mut seen = false;
+    for check in checks {
+        if is_handoff(check["name"].as_str().unwrap_or(""), check["state"].as_str().unwrap_or(""), check["description"].as_str()) { continue }
+        seen = true;
+        match check["state"].as_str() {
+            Some("SUCCESS" | "SKIPPED" | "NEUTRAL") => {}
+            Some("PENDING" | "QUEUED" | "IN_PROGRESS" | "WAITING" | "REQUESTED" | "EXPECTED") => {
+                if verdict == Checks::Passed { verdict = Checks::Running }
+            }
+            _ => verdict = Checks::Failing,
+        }
     }
-    Ok(())
+    if seen { verdict } else { Checks::Running }
+}
+
+pub(crate) async fn checks(url: &str) -> Result<Checks, String> {
+    let out = sh("gh", &["pr", "checks", url, "--json", "name,state,description"], Duration::from_secs(30)).await;
+    let checks: Vec<Value> = serde_json::from_str(&out.stdout).map_err(|_| "Cannot verify the PR checks; no PASS or approval was published")?;
+    Ok(judge_checks(&checks))
+}
+
+/// Prefix of the errors that mean GitHub did not answer, not that the PR is unfit to publish.
+const UNREACHABLE: &str = "GitHub did not answer: ";
+
+/// A failure worth another look while a run waits for checks: nothing was decided or written.
+pub fn is_transient(error: &str) -> bool {
+    error.starts_with(UNREACHABLE)
+}
+
+pub(crate) const CHECKS_FAILING: &str = "Checks are failing or absent. No PASS or approval was published; retry once they have passed";
+
+/// For a caller that cannot wait: the look before an automatic start.
+pub(crate) async fn checks_pass(url: &str) -> Result<(), String> {
+    match checks(url).await? {
+        Checks::Passed => Ok(()),
+        Checks::Running => Err("Checks are still running. No PASS or approval was published; retry once they have passed".into()),
+        Checks::Failing => Err(CHECKS_FAILING.into()),
+    }
 }
 
 /// A durable intent is created before POST. On restart/retry we reconcile GitHub first, and never
@@ -346,15 +406,31 @@ async fn submit(scope: &ReviewScope, report: &Report, verdict: Verdict, login: &
     Ok(receipt)
 }
 
-pub async fn finish(prepared: &Prepared, report: &Report, url: &str, approve: bool) -> Result<(Option<Receipt>, String), String> {
+/// How a publication attempt ended without an error.
+pub enum Finished {
+    /// The verdict is recorded, and published when the run approves.
+    Published(Option<Receipt>, String),
+    /// The review passed while checks were still running. Nothing is published yet and the caller
+    /// asks again later with the same report, so the finished review is not thrown away.
+    AwaitingChecks,
+}
+
+pub async fn finish(prepared: &Prepared, report: &Report, url: &str, approve: bool) -> Result<Finished, String> {
     let scope = &prepared.scope;
     let verdict = report.validate(scope)?;
-    let linked = github::fetch_linked_pr(url).await?;
+    let unreachable = |e: String| format!("{UNREACHABLE}{e}");
+    let linked = github::fetch_linked_pr(url).await.map_err(unreachable)?;
     current(scope, &linked.pr)?;
     if approve && linked.pr.author == linked.login { return Err("You cannot approve your own PR".into()) }
-    if verdict == Verdict::Pass { checks_pass(url).await?; }
+    if verdict == Verdict::Pass {
+        match checks(url).await.map_err(unreachable)? {
+            Checks::Passed => {}
+            Checks::Running => return Ok(Finished::AwaitingChecks),
+            Checks::Failing => return Err(CHECKS_FAILING.into()),
+        }
+    }
     // Checking CI can take time; re-read the identity immediately before the external write.
-    current(scope, &github::fetch_linked_pr(url).await?.pr)?;
+    current(scope, &github::fetch_linked_pr(url).await.map_err(unreachable)?.pr)?;
     let posted = if approve { Some(submit(scope, report, verdict, &linked.login, &linked.pr.asked_at).await?) } else { None };
     let dir = checkouts_dir().join(scope.repo.split('/').next_back().unwrap_or_default());
     reviews::record_verified(scope, verdict, &report.summary, &dir).await?;
@@ -363,7 +439,7 @@ pub async fn finish(prepared: &Prepared, report: &Report, url: &str, approve: bo
         (None, Verdict::Pass) => format!("PASS for {}. Both review passes completed and checks passed.", &scope.head_sha[..7]),
         (None, Verdict::Fail) => format!("FAIL for {}. {}", &scope.head_sha[..7], report.summary),
     };
-    Ok((posted, outcome))
+    Ok(Finished::Published(posted, outcome))
 }
 
 #[cfg(test)]
@@ -371,6 +447,56 @@ mod tests {
     use super::*;
     fn scope() -> ReviewScope { ReviewScope { repo:"o/r".into(), number:7, branch:"feat".into(), base:"main".into(), base_sha:"a".repeat(40), head_sha:"b".repeat(40) } }
     fn report() -> Report { Report { scope:scope(), maintainability_complete:true, correctness_complete:true, verdict:Outcome::Pass, summary:"No blockers".into(), findings:vec![], notes:vec![] } }
+    #[test]
+    fn running_checks_wait_and_failing_or_absent_checks_stop_a_pass() {
+        let check = |name: &str, state: &str| json!({ "name": name, "state": state, "description": "" });
+        assert_eq!(judge_checks(&[check("build", "SUCCESS"), check("docs", "SKIPPED"), check("lint", "NEUTRAL")]), Checks::Passed);
+        for state in ["PENDING", "QUEUED", "IN_PROGRESS", "WAITING", "REQUESTED", "EXPECTED"] {
+            assert_eq!(judge_checks(&[check("build", "SUCCESS"), check("deploy", state)]), Checks::Running, "{state}");
+        }
+        // One failure decides, whatever else is still running.
+        for state in ["FAILURE", "ERROR", "CANCELLED", "TIMED_OUT", "ACTION_REQUIRED", "STALE", "SOMETHING_NEW"] {
+            assert_eq!(judge_checks(&[check("deploy", "IN_PROGRESS"), check("build", state), check("lint", "PENDING")]), Checks::Failing, "{state}");
+        }
+        // Right after a push GitHub may list no checks yet.
+        assert_eq!(judge_checks(&[]), Checks::Running);
+    }
+
+    #[test]
+    fn only_an_unanswered_github_call_is_worth_another_look() {
+        assert!(is_transient(&format!("{UNREACHABLE}HTTP 502")));
+        assert!(!is_transient(CHECKS_FAILING));
+        assert!(!is_transient("The PR changed during review. Start a new review of its current base and head; nothing was published"));
+    }
+
+    #[test]
+    fn a_human_handoff_is_not_a_running_check() {
+        let status = |state: &str, description: &str| json!({ "name": "thermo-nuclear-review", "state": state, "description": description });
+        let build = json!({ "name": "build", "state": "SUCCESS", "description": "" });
+        // The reviewer the handoff waits for must be able to publish the approval that clears it.
+        assert_eq!(judge_checks(&[build.clone(), status("PENDING", "Needs a human: widens who can read the table")]), Checks::Passed);
+        // Any other state of the review status still counts, and so does the same text on another check.
+        assert_eq!(judge_checks(&[build.clone(), status("PENDING", "Review in progress")]), Checks::Running);
+        assert_eq!(judge_checks(&[build.clone(), status("FAILURE", "Fail: missing test")]), Checks::Failing);
+        assert_eq!(judge_checks(&[build.clone(), json!({ "name": "deploy", "state": "PENDING", "description": "Needs a human: approve the deploy" })]), Checks::Running);
+        // A handoff alone verifies nothing about CI yet.
+        assert_eq!(judge_checks(&[status("PENDING", "Needs a human: grants a new reader")]), Checks::Running);
+    }
+
+    #[test]
+    fn the_wait_for_checks_survives_a_restart_but_its_next_look_does_not() {
+        let mut job = Job::new(true);
+        job.checks_since = Some(1_000);
+        job.checks_retry_at = 31_000;
+        let restored: Job = serde_json::from_value(serde_json::to_value(&job).unwrap()).unwrap();
+        assert_eq!(restored.checks_since, Some(1_000));
+        assert_eq!(restored.checks_retry_at, 0);
+        // Runs saved before this field existed still load.
+        let mut old = serde_json::to_value(Job::new(true)).unwrap();
+        old.as_object_mut().unwrap().remove("checksSince");
+        assert_eq!(serde_json::from_value::<Job>(old).unwrap().checks_since, None);
+    }
+
     #[test]
     fn a_pass_requires_both_reviews_and_exact_identity() {
         let expected = scope();

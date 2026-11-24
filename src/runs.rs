@@ -395,6 +395,30 @@ impl Run {
         self.mode == Mode::Auto || self.kind == Kind::Approve
     }
 
+    /// The review passed and only waits for the PR's checks before it publishes. It runs no session, so
+    /// it takes no batch slot, but it still has its PR to itself.
+    fn awaiting_checks(&self) -> bool {
+        self.review_job.as_ref().is_some_and(|j| j.stage == Stage::Publishing && j.checks_since.is_some())
+    }
+
+    /// A publication attempt found the checks still running. The first time says so; later ones only
+    /// schedule the next look, until the wait runs out and the run fails with its review kept for a retry.
+    fn await_checks(&mut self, now: u64) -> Option<String> {
+        let job = self.review_job.as_mut()?;
+        let since = *job.checks_since.get_or_insert(now);
+        if now.saturating_sub(since) > review_flow::CHECKS_WAIT.as_millis() as u64 {
+            job.checks_since = None;
+            let error = format!("Checks were still running after {} minutes. The review is kept: retry to publish it once they pass", review_flow::CHECKS_WAIT.as_secs() / 60);
+            self.status = Status::Failed;
+            self.ended_at = Some(now);
+            self.push(EventKind::Error, &error);
+            return Some(error);
+        }
+        job.checks_retry_at = now + review_flow::CHECKS_POLL.as_millis() as u64;
+        if since == now { self.push(EventKind::Note, "Review passed. Waiting for the PR's checks to finish, then publishing."); }
+        None
+    }
+
     fn enqueue(&mut self, pending: Pending) {
         self.status = Status::Queued;
         self.queued = Some(pending);
@@ -663,10 +687,11 @@ impl Run {
             o.insert("sessionStarted".into(), self.session_cwd.is_some().into());
             o.remove("queued");
             // The list is polled every few seconds: the prompt and the review job's report and history come
-            // with the single run (`get`) the full log loads. The page reads only the job's stage here.
+            // with the single run (`get`) the full log loads. The page reads only the job's stage here, and
+            // whether it waits for checks.
             o.remove("prompt");
             if let Some(job) = o.get_mut("reviewJob").filter(|j| j.is_object()) {
-                *job = serde_json::json!({ "stage": job["stage"] });
+                *job = serde_json::json!({ "stage": job["stage"], "checksSince": job["checksSince"] });
             }
         }
         v
@@ -675,10 +700,13 @@ impl Run {
 
 /// Where a run stands, for the batches that follow the runs they started: its id, its status, and the first line
 /// of its last result or error, if it has one.
+/// A run that only waits for checks reads as "waiting", which the batches do not count as active work.
 pub fn outcome(run: &Value) -> (Option<String>, String, Option<String>) {
     let said = run["events"].as_array().and_then(|events| events.iter().rev().find(|e| matches!(e["kind"].as_str(), Some("result" | "error"))))
         .and_then(|e| e["text"].as_str()).map(first_line);
-    (run["id"].as_str().map(String::from), run["status"].as_str().unwrap_or("interrupted").into(), said)
+    let waiting = run["status"] == "running" && run["reviewJob"]["checksSince"].is_u64();
+    let status = if waiting { "waiting".into() } else { run["status"].as_str().unwrap_or("interrupted").into() };
+    (run["id"].as_str().map(String::from), status, said)
 }
 
 // ---------- persistence ----------
@@ -760,12 +788,14 @@ impl Inner {
     /// A writing run waits while another writing run works on the same PR or in the same directory.
     fn busy(&self, run: &Run) -> bool {
         self.runs.iter().any(|r| {
-            r.id != run.id && r.status == Status::Running && r.exclusive() && (r.cwd == run.cwd || (r.pr_url.is_some() && r.pr_url == run.pr_url))
+            // A run waiting for checks runs no session, so it no longer holds the checkout. It still holds its PR.
+            r.id != run.id && r.status == Status::Running && r.exclusive()
+                && ((r.cwd == run.cwd && !r.awaiting_checks()) || (r.pr_url.is_some() && r.pr_url == run.pr_url))
         })
     }
 
     fn writing(&self, include_queued: bool) -> usize {
-        self.runs.iter().filter(|r| r.exclusive() && if include_queued { r.status.active() } else { r.status == Status::Running }).count()
+        self.runs.iter().filter(|r| r.exclusive() && !r.awaiting_checks() && if include_queued { r.status.active() } else { r.status == Status::Running }).count()
     }
 
     fn wait_reason(&self, run: &Run) -> Option<&'static str> {
@@ -931,8 +961,9 @@ impl Store {
         let work = {
             let mut g = self.inner.lock().unwrap();
             let mut work = Vec::new();
+            let now = now_ms();
             for run in g.runs.iter_mut().filter(|r| r.status == Status::Running) {
-                let Some(job) = run.review_job.as_mut().filter(|j| !j.busy && matches!(j.stage, Stage::Preparing | Stage::Publishing)) else { continue };
+                let Some(job) = run.review_job.as_mut().filter(|j| !j.busy && j.checks_retry_at <= now && matches!(j.stage, Stage::Preparing | Stage::Publishing)) else { continue };
                 job.busy = true;
                 work.push((run.id.clone(), run.pr_url.clone().unwrap_or_default(), run.cwd.clone(), run.kind == Kind::Approve, job.clone()));
             }
@@ -942,11 +973,14 @@ impl Store {
         for (id, url, cwd, approve, job) in work {
             let store = self.clone();
             tokio::spawn(async move {
-                enum Next { Prepared(review_flow::Prepared), Published(Option<review_flow::Receipt>, String) }
+                enum Next { Prepared(review_flow::Prepared), Published(Option<review_flow::Receipt>, String), AwaitingChecks }
                 let result = match job.stage {
                     Stage::Preparing => review_flow::prepare(&url, Path::new(&cwd), !approve, job.previous.as_ref()).await.map(Next::Prepared),
                     Stage::Publishing => match job.prepared.as_ref().zip(job.report.as_ref()) {
-                        Some((prepared, report)) => review_flow::finish(prepared, report, &url, approve).await.map(|(receipt, text)| Next::Published(receipt, text)),
+                        Some((prepared, report)) => review_flow::finish(prepared, report, &url, approve).await.map(|finished| match finished {
+                            review_flow::Finished::Published(receipt, text) => Next::Published(receipt, text),
+                            review_flow::Finished::AwaitingChecks => Next::AwaitingChecks,
+                        }),
                         None => Err("Missing review evidence. Start a new review; nothing was published".into()),
                     },
                     _ => return,
@@ -970,13 +1004,22 @@ impl Store {
                         run.push(EventKind::Note, "Snapshot ready. Running maintainability and correctness review with read-only tools.");
                         run.enqueue(Pending { prompt });
                     }
+                    Ok(Next::AwaitingChecks) => {
+                        if let Some(error) = run.await_checks(now_ms()) { notify("PR Inbox", &format!("{}: {error}", run.title)); }
+                    }
                     Ok(Next::Published(receipt, text)) => {
                         current.receipt = receipt;
+                        current.checks_since = None;
                         current.stage = Stage::Complete;
                         run.status = Status::Done;
                         run.ended_at = Some(now_ms());
                         run.push(EventKind::Result, &text);
                         notify("PR Inbox", &format!("{}: {text}", run.title));
+                    }
+                    // While waiting, GitHub not answering is a missed look: try again until the wait runs out.
+                    Err(error) if current.checks_since.is_some() && review_flow::is_transient(&error) => {
+                        run.push(EventKind::Note, format!("Could not read the PR's checks, trying again: {error}"));
+                        if let Some(error) = run.await_checks(now_ms()) { notify("PR Inbox", &format!("{}: {error}", run.title)); }
                     }
                     Err(error) => {
                         run.status = Status::Failed;
@@ -1145,6 +1188,9 @@ impl Store {
             if job.stage != Stage::Repair {
                 if text.is_some() { return Err(RunError::Invalid("Start a new task from the PR to change review instructions".into())) }
                 if job.stage != Stage::Publishing { job.stage = Stage::Preparing; job.report = None; }
+                // A retry waits for the checks afresh instead of inheriting a deadline that has passed.
+                job.checks_since = None;
+                job.checks_retry_at = 0;
                 run.session_cwd = None;
                 run.enqueue(Pending { prompt: String::new() });
                 // Publication retries reconcile GitHub and reuse the verified result without calling Claude.
@@ -1557,6 +1603,72 @@ mod tests {
         let mut r = run();
         r.finish(Exit::Code(0));
         assert_eq!(r.status, Status::Failed);
+    }
+
+    #[test]
+    fn a_passed_review_waits_for_running_checks_then_gives_up_with_its_result_kept() {
+        let mut job = Job::new(true);
+        job.stage = Stage::Publishing;
+        let mut r = Run { kind: Kind::Approve, review_job: Some(job), ..run() };
+        assert!(!r.awaiting_checks());
+
+        // The first look says why the run is still going and schedules the next one.
+        assert!(r.await_checks(1_000).is_none());
+        assert!(r.awaiting_checks());
+        assert_eq!(r.status, Status::Running);
+        assert_eq!(r.review_job.as_ref().unwrap().checks_retry_at, 1_000 + review_flow::CHECKS_POLL.as_millis() as u64);
+        let notes = |r: &Run| r.events.iter().filter(|e| e.text.starts_with("Review passed. Waiting")).count();
+        assert_eq!(notes(&r), 1);
+
+        // Later looks stay quiet and keep the first deadline.
+        assert!(r.await_checks(31_000).is_none());
+        assert_eq!(notes(&r), 1);
+        assert_eq!(r.review_job.as_ref().unwrap().checks_since, Some(1_000));
+
+        // Past the limit the run fails, but the stage and report stay for a retry that starts a new wait.
+        let late = 1_000 + review_flow::CHECKS_WAIT.as_millis() as u64 + 1;
+        assert!(r.await_checks(late).unwrap().contains("retry to publish"));
+        assert_eq!(r.status, Status::Failed);
+        assert_eq!(r.review_job.as_ref().unwrap().stage, Stage::Publishing);
+        assert!(!r.awaiting_checks());
+    }
+
+    #[test]
+    fn a_run_waiting_for_checks_frees_its_checkout_but_not_its_pr() {
+        let approval = |id: &str, pr: &str, waiting: bool| {
+            let mut job = Job::new(true);
+            job.stage = Stage::Publishing;
+            job.checks_since = waiting.then_some(1_000);
+            Run { id: id.into(), kind: Kind::Approve, mode: Mode::Plan, cwd: "/repo".into(), pr_url: Some(pr.into()), review_job: Some(job), ..run() }
+        };
+        let inner = |first: Run| Inner { runs: vec![first], overnight_limit: false, dirty: false, urgent: false, last_save: Instant::now() };
+        // Another PR in the same checkout starts while the first one waits for its checks.
+        assert!(!inner(approval("a", "pr/1", true)).busy(&approval("b", "pr/2", false)));
+        assert!(inner(approval("a", "pr/1", false)).busy(&approval("b", "pr/2", false)));
+        // The same PR still waits for it.
+        assert!(inner(approval("a", "pr/1", true)).busy(&approval("b", "pr/1", false)));
+    }
+
+    #[test]
+    fn batches_see_a_run_waiting_for_checks_as_waiting() {
+        let summary = |since: Value| json!({ "id": "r1", "status": "running", "reviewJob": { "stage": "publishing", "checksSince": since }, "events": [] });
+        assert_eq!(outcome(&summary(json!(1_000))).1, "waiting");
+        assert_eq!(outcome(&summary(Value::Null)).1, "running");
+    }
+
+    #[test]
+    fn a_run_waiting_for_checks_takes_no_batch_slot() {
+        let waiting = || {
+            let mut job = Job::new(false);
+            job.stage = Stage::Publishing;
+            job.checks_since = Some(1_000);
+            Run { mode: Mode::Auto, kind: Kind::Thermo, review_job: Some(job), ..run() }
+        };
+        let mut publishing = waiting();
+        publishing.review_job.as_mut().unwrap().checks_since = None;
+        let inner = Inner { runs: vec![waiting(), waiting(), publishing, Run { mode: Mode::Auto, ..run() }], overnight_limit: false, dirty: false, urgent: false, last_save: Instant::now() };
+        assert_eq!(inner.writing(true), 2);
+        assert_eq!(inner.writing(false), 2);
     }
 
     #[test]

@@ -56,6 +56,7 @@ fn main() {
                 let _ = axum::serve(listener, app).await;
             });
             runtime.spawn(runs::ticker(store.clone()));
+            runtime.spawn(reviews::queue_worker());
             runtime.spawn(server::keep_warm(store.clone(), prs.clone()));
             runtime.spawn(overnight::worker(overnight, store.clone(), prs.clone()));
             runtime.spawn(auto_review::worker(auto, store.clone(), prs.clone()));

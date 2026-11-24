@@ -14,7 +14,7 @@ A PR qualifies when all of these hold:
 - You have not skipped it since the latest request for your review.
 - Nobody has reviewed it from your account yet. You have left no review on GitHub, Auto thermo has never started on it, and no Thermo & approve run you clicked reviewed it, on any commit.
 - No other Claude run is working on it.
-- Every check has passed. Running, failing or missing checks make it wait.
+- Every check has passed. Running, failing or missing checks make it wait. A `thermo-nuclear-review` status pending with "Needs a human:" is a request for a reviewer and not a check, so it does not.
 
 Right before a start, PR Inbox reads the PR from GitHub again, checks all of the above once more, and asks GitHub whether every check passed. The PR list cannot tell which teams are yours, so this fresh read decides for a request sent to a team. When the fresh read says no, PR Inbox does not ask about that PR again until it changes on GitHub.
 

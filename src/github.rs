@@ -266,7 +266,7 @@ const FIELDS: &str = r#"
   commits(last: 1) { nodes { commit { committedDate statusCheckRollup { state contexts(first: 100) { nodes {
     __typename
     ... on CheckRun { name conclusion status detailsUrl startedAt completedAt }
-    ... on StatusContext { context state targetUrl createdAt }
+    ... on StatusContext { context state description targetUrl createdAt }
   } } } } } }"#;
 
 /// The inbox as four GraphQL queries GitHub answers side by side: your open PRs, then one search per list of other
@@ -314,6 +314,11 @@ fn ci_of(state: &str) -> Ci {
 fn latest_checks(contexts: &[Value]) -> Vec<Latest<'_>> {
     let mut by_name: HashMap<&str, Latest> = HashMap::new();
     for c in contexts {
+        // A review status pending with "Needs a human:" waits on a reviewer, not on CI. Counting it as running
+        // kept Auto thermo from ever starting the review that clears it.
+        if crate::review_flow::is_handoff(c["context"].as_str().unwrap_or(""), c["state"].as_str().unwrap_or(""), c["description"].as_str()) {
+            continue;
+        }
         let check = if c["__typename"] == "CheckRun" {
             let conclusion = c["conclusion"].as_str().unwrap_or("");
             let (ci, cancelled) = match c["status"].as_str() {
@@ -867,6 +872,15 @@ mod tests {
 
     fn pr_with(contexts: Vec<Value>, rollup: &str) -> Pr {
         to_pr(&json!({ "url": "u", "commits": { "nodes": [{ "commit": { "statusCheckRollup": { "state": rollup, "contexts": { "nodes": contexts } } } }] } }))
+    }
+
+    #[test]
+    fn a_human_handoff_does_not_keep_the_pr_running() {
+        let build = json!({ "__typename": "CheckRun", "name": "build", "status": "COMPLETED", "conclusion": "SUCCESS", "completedAt": "2026-01-01T00:00:00Z" });
+        let review = |state: &str, description: &str| json!({ "__typename": "StatusContext", "context": "thermo-nuclear-review", "state": state, "description": description, "createdAt": "2026-01-01T00:00:00Z" });
+        assert_eq!(pr_with(vec![build.clone(), review("PENDING", "Needs a human: widens who can read the table")], "PENDING").ci, Ci::Pass);
+        assert_eq!(pr_with(vec![build.clone(), review("PENDING", "Review in progress")], "PENDING").ci, Ci::Running);
+        assert_eq!(pr_with(vec![build, review("FAILURE", "Fail: missing test")], "FAILURE").ci, Ci::Fail);
     }
 
     #[test]
