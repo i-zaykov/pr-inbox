@@ -73,7 +73,7 @@ code { font-family: var(--mono); font-size: 12px; }
 .btn-icon { width: 32px; padding: 0; }
 .btn-admin { background: var(--bad); border-color: var(--bad); color: var(--primary-ink); }
 .btn-admin:hover:not(:disabled) { background: var(--bad-ink); color: var(--primary-ink); }
-.pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid oklch(0.34 0.035 155); background: transparent; color: oklch(0.82 0.02 155); font-weight: 500; transition: background-color .18s, border-color .18s, color .18s, transform .12s; }
+.pill { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border-radius: 999px; border: 1px solid oklch(0.34 0.035 155); background: transparent; color: oklch(0.82 0.02 155); font-weight: 500; white-space: nowrap; transition: background-color .18s, border-color .18s, color .18s, transform .12s; }
 .pill:hover { background: var(--hover); color: #fff; }
 .pill:active { transform: scale(.95); }
 .pill[aria-pressed="true"] { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
@@ -122,10 +122,11 @@ button.state:hover { color: #fff; }
 .logo { width: 32px; height: 32px; border-radius: 8px; background: #fff; display: flex; align-items: center; justify-content: center; flex: none; }
 .top h1 { font-size: 20px; }
 .updated { display: inline-flex; align-items: center; gap: 8px; }
-/* The pills wrap in their own column, so the view switches keep one spot whatever the filter shows. */
-.filters { display: flex; align-items: flex-start; gap: 8px 24px; padding-bottom: 14px; }
-.pills { flex: 1 1 0; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.views { flex: none; display: flex; align-items: center; gap: 16px; }
+/* The pills wrap in their own column, so the view switches keep one spot whatever the filter shows.
+   Once that column would fall under 280px (a narrow window, or a wide PR panel), the switches drop below it. */
+.filters { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 24px; padding-bottom: 14px; }
+.pills { flex: 1 1 280px; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.views { flex: 0 1 auto; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
 .group-by { display: flex; align-items: center; gap: 8px; }
 /* What you ticked, and the two things it can do. */
 .pick-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-bottom: 14px; padding: 8px 8px 8px 16px; border-radius: 10px; background: var(--raise); border: 1px solid var(--line-strong); }
@@ -315,6 +316,8 @@ body.resizing { cursor: col-resize; user-select: none; }
 .detail-sub img { width: 18px; height: 18px; border-radius: 50%; vertical-align: middle; background: var(--raise); }
 .detail-acts { position: relative; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .detail-body { display: flex; flex-direction: column; gap: 22px; padding: 18px 24px 48px; }
+/* Prose keeps a readable line however wide the panel is dragged; the Code tab's diffs use the full width. */
+.detail-body > .facts, .detail-body > section { max-width: 820px; }
 .facts { display: grid; grid-template-columns: 110px 1fr; gap: 10px 16px; align-items: start; }
 .facts > dt { color: var(--dim); padding-top: 2px; }
 .facts > dd { margin: 0; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-width: 0; }
@@ -407,10 +410,42 @@ body.resizing { cursor: col-resize; user-select: none; }
   .pr-acts { flex-basis: 100%; justify-content: flex-start; padding-left: 50px; }
   .chip .t { max-width: 70vw; }
   .strip-runs { padding-left: 16px; }
-  .filters { flex-wrap: wrap; }
-  .views { flex: 1 1 100%; flex-wrap: wrap; gap: 8px 16px; }
+  .views { flex: 1 1 100%; }
   .search { width: 100%; order: 10; }
 }
+/* A wide PR panel leaves the board as narrow as a phone's, so it takes the phone's layout: the header scrolls
+   away with the page and a row's buttons go under its title. */
+body.narrow .wrap { padding-inline: 16px; }
+body.narrow .top { position: static; }
+body.narrow .pr-main { flex-basis: 0; }
+body.narrow .pr-acts { flex-basis: 100%; justify-content: flex-start; padding-left: 50px; }
+body.narrow .chip .t { max-width: 240px; }
+body.narrow .strip-runs { padding-left: 16px; }
+body.narrow .views { flex: 1 1 100%; }
+body.narrow .search { width: 100%; order: 10; }
+/* Impeccable, a polish pass in Operate mode. The world stays: fonts, spacing and layout are as they were. What
+   changes is what its craft floor refuses or asks for. No bar down the side of a box: a selected row is tinted and
+   outlined, someone else's PR keeps its tint and author chip, and a quote gets a tinted block. Drawn icons replace
+   the ✓ ✕ ↻ glyphs. The summary leads with its content and its label moves under it. Scrollbars take the palette,
+   numbers are tabular, headings balance, rows answer the pointer, and repos sit further apart than rows. */
+.pr.selected { background: color-mix(in oklab, var(--primary) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--primary) 60%, transparent); }
+.pr.theirs:not(.selected) { box-shadow: none; }
+.pr { transition: background-color .15s ease-out; }
+.pr:not(.selected):not(.theirs):hover { background: color-mix(in oklab, var(--text) 3%, transparent); }
+.md blockquote { border-left: 0; padding: 8px 12px; border-radius: 8px; background: var(--raise); }
+.tag { gap: 4px; }
+.tag svg, .fails svg { flex: none; }
+.fails a, .fails span { display: inline-flex; align-items: center; gap: 4px; }
+html, .detail, .diff, .md pre, .dialog { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.pr-num, .pr-meta .dim, .ver, .pill .n, .group-head .sub, .files-sum { font-variant-numeric: tabular-nums; }
+h1, h2, .detail-title, .hero-line { text-wrap: balance; }
+.board { gap: 32px; }
+.hero { flex-flow: row wrap; align-items: center; column-gap: 16px; }
+.hero > .hero-line, .hero > .hero-detail { flex-basis: 100%; }
+.hero > .hero-kicker, .hero > .hero-acts { order: 1; }
+.hero > .hero-run { order: 2; flex-basis: 100%; }
+.hero-kicker .hero-badge { width: 20px; height: 20px; border-radius: 6px; }
+.hero-kicker .hero-badge svg { width: 12px; height: 12px; }
 @media (prefers-reduced-motion: reduce) { *, *::before { animation: none !important; transition: none !important; } }
 </style>
 </head>
@@ -454,6 +489,8 @@ const ICON = {
   external: '<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
   rocket: '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"/><path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"/><path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"/><path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"/>',
 }
+// A label that starts with ✓, ✕ or ↻ gets the drawn icon in its place.
+const glyphIcon = label => String(label).replace(/^([✓✕↻]) /, (m, g) => icon({ '✓': 'check', '✕': 'x', '↻': 'refresh' }[g], 12))
 const icon = (name, size = 16, cls = '') => `<svg class="${cls}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[name]}</svg>`
 
 const DAY = 86400000
@@ -851,7 +888,7 @@ function heroBody(o) {
 // `byRepo`: no lane heading above the row says it is ready, waiting on you or reviewed by you, so a tag does.
 function tags(pr, lane, byRepo) {
   const out = []
-  const tag = (label, cls, title = '') => out.push(`<span class="tag ${cls}"${title ? ` title="${esc(title)}"` : ''}>${label}</span>`)
+  const tag = (label, cls, title = '') => out.push(`<span class="tag ${cls}"${title ? ` title="${esc(title)}"` : ''}>${glyphIcon(label)}</span>`)
   if (pr.state && pr.state !== 'OPEN') {
     tag(pr.state === 'MERGED' ? 'Merged' : 'Closed', 'tag-mute')
     return out.join('')
@@ -937,7 +974,7 @@ function row(pr, lane, byRepo = false, linked = false) {
   const k = keyOf(pr)
   const done = doneFor(k)
   const link = (href, body, cls = '') => href ? `<a class="${cls}" href="${esc(href)}" target="_blank" rel="noreferrer">${body}</a>` : `<span class="${cls}">${body}</span>`
-  const fails = pr.failing.slice(0, 4).map(c => link(httpsOnly(c.url), `✕ ${esc(c.name)}${c.cancelled ? ' (cancelled)' : ''}`)).join('')
+  const fails = pr.failing.slice(0, 4).map(c => link(httpsOnly(c.url), `${icon('x', 12)}${esc(c.name)}${c.cancelled ? ' (cancelled)' : ''}`)).join('')
   const mine = !lane.theirs
   const acts = actsHtml(pr, lane, k)
   const info = [
@@ -1230,7 +1267,7 @@ function detailHead(pr) {
   const lane = LANE[pr.lane]
   const k = keyOf(pr)
   const avatar = `<img src="https://github.com/${esc(encodeURIComponent(pr.author))}.png?size=40" alt="" loading="lazy" onerror="this.remove()">`
-  const fails = pr.failing.slice(0, 6).map(c => httpsOnly(c.url) ? `<a href="${esc(c.url)}" target="_blank" rel="noreferrer">✕ ${esc(c.name)}</a>` : `<span>✕ ${esc(c.name)}</span>`).join('')
+  const fails = pr.failing.slice(0, 6).map(c => httpsOnly(c.url) ? `<a href="${esc(c.url)}" target="_blank" rel="noreferrer">${icon('x', 12)}${esc(c.name)}</a>` : `<span>${icon('x', 12)}${esc(c.name)}</span>`).join('')
   const tabs = S.tabs.length > 1 ? `<div class="ptabs" role="tablist">${S.tabs.map(t => {
     const p = findPr(t)
     return `<button class="ptab" role="tab" data-act="tab" data-key="${esc(t)}" aria-current="${t === k}" title="${esc(`${short(p)} ${p.title}`)}"><span class="t">#${p.number} ${esc(p.title)}</span><span class="x" data-act="tab-close" data-key="${esc(t)}" aria-label="Close tab">${icon('x', 12)}</span></button>`
@@ -2437,6 +2474,7 @@ window.addEventListener('pr-inbox:open', ({ detail }) => {
   if (detail?.error) toast(detail.error, true)
   else openLinkedPr(detail?.url)
 })
+new ResizeObserver(([entry]) => document.body.classList.toggle('narrow', entry.contentRect.width < 700)).observe($('#board'))
 const initialPr = new URLSearchParams(location.search).get('pr')
 if (initialPr) openLinkedPr(initialPr)
 loadRecentPrs()
