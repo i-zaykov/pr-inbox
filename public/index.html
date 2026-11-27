@@ -278,6 +278,24 @@ button.state:hover { color: #fff; }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .dialog ul { margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 4px; color: var(--text); }
 .dialog ul span { color: var(--sub); }
+/* ⌘⇧P: find any PR the inbox knows, whatever the board's filters show. */
+.palette-backdrop { position: fixed; inset: 0; z-index: 60; display: flex; justify-content: center; align-items: flex-start; padding: 12vh 16px 16px; background: oklch(0.12 0.03 155 / .65); }
+.palette { width: min(680px, 100%); max-height: 76vh; display: flex; flex-direction: column; border-radius: 14px; background: var(--panel); border: 1px solid var(--line-strong); box-shadow: var(--shadow); overflow: hidden; }
+.palette-input { flex: none; width: 100%; padding: 16px 18px; font: inherit; font-size: 16px; color: var(--text); caret-color: var(--primary); background: transparent; border: 0; border-bottom: 1px solid var(--line); }
+.palette-input:focus-visible { outline: none; }
+.palette-input::-webkit-search-cancel-button { display: none; }
+.palette-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; padding: 6px; display: flex; flex-direction: column; gap: 2px; }
+.palette-item { all: unset; box-sizing: border-box; display: grid; grid-template-columns: 8px minmax(0, 1fr) auto; gap: 3px 12px; align-items: center; padding: 9px 12px; border-radius: 9px; cursor: pointer; }
+.palette-item:hover { background: var(--hover); }
+.palette-item[aria-selected="true"] { background: oklch(0.94 0.04 155 / .14); }
+.palette-item .t { font-size: 14px; font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.palette-item .m { grid-column: 2 / 4; display: flex; gap: 12px; min-width: 0; font-size: 12px; color: var(--dim); white-space: nowrap; overflow: hidden; }
+.palette-item .m .br { font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; }
+.palette-item .lane { font-size: 12px; color: var(--sub); white-space: nowrap; }
+.palette-item mark { background: oklch(0.94 0.04 155 / .22); color: inherit; border-radius: 3px; }
+.palette-empty { padding: 18px 12px; color: var(--sub); }
+.palette-foot { flex: none; display: flex; flex-wrap: wrap; gap: 6px 18px; padding: 9px 14px; border-top: 1px solid var(--line); font-size: 12px; color: var(--dim); }
+.palette-foot kbd { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 5px; border: 1px solid var(--line-strong); background: var(--bg); color: var(--text); font: 11px var(--mono); text-align: center; }
 .quick { display: flex; gap: 6px; flex-wrap: wrap; }
 .ship-list { display: flex; flex-direction: column; gap: 10px; max-height: 52vh; overflow: auto; }
 .ship-repo { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border-radius: 10px; background: var(--bg); border: 1px solid var(--line); }
@@ -473,6 +491,7 @@ h1, h2, .detail-title, .hero-line { text-wrap: balance; }
 <aside class="detail" id="detail" hidden aria-label="Pull request"></aside>
 <div class="detail-grip" id="detail-grip" role="separator" aria-orientation="vertical" aria-label="Resize the PR panel" title="Drag to resize, double-click to reset"></div>
 <div id="dialog"></div>
+<div id="palette"></div>
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
 <script>
@@ -602,6 +621,8 @@ const S = {
   tabs: [], view: 'summary', files: {},
   // The search box, the people each repo can ask to review, whether the picker is open, and comment drafts by URL.
   query: '', people: {}, picking: false, comments: {}, posting: false,
+  // The ⌘⇧P finder while it is open: its query, the highlighted row and the rows it shows.
+  palette: null,
   drafts: {}, busy: {}, done: {}, bulkBusy: {}, replyOpen: {}, replyDrafts: {},
   // The PRs you ticked, by key, for the bar on top to merge, or merge and release.
   picked: new Set(),
@@ -1059,6 +1080,7 @@ function renderBoard() {
     restoreScroll(board, scroll)
   })
   revealSelectedRow()
+  if (S.palette) renderPalette()
 }
 
 // The bar under the filters while any PR on the board can be ticked: a select-all tick, and what the ticks can
@@ -1444,6 +1466,113 @@ async function loadPeople(repo) {
   renderDetail()
 }
 
+// ---------- find any PR (⌘⇧P) ----------
+
+// Every PR the inbox knows, whatever the board's lane, Needs me and search filters hide: yours, the ones
+// waiting on you, and any opened from a link.
+function knownPrs() {
+  const seen = new Set()
+  return [...allPrs(), ...Object.values(S.linkedPrs)].filter(pr => !seen.has(pr.url) && seen.add(pr.url))
+}
+
+// A GitHub PR link, or owner/repo#123, that the inbox may not hold.
+function prLink(query) {
+  const q = query.trim()
+  const ref = q.match(/^https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/pull\/(\d+)/) || q.match(/^([\w.-]+\/[\w.-]+)#(\d+)$/)
+  return ref ? { url: `https://github.com/${ref[1]}/pull/${ref[2]}`, label: `${ref[1]}#${ref[2]}` } : null
+}
+
+// How well a PR fits the query, or 0 when a word misses. Every word must match, as on the board, with two
+// additions: a bare number also matches the title, and bi-dbt#1850 checks the repo and the number together.
+// The number counts most, then the title, then the repo, branch and author.
+function paletteScore(pr, query) {
+  const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+  let score = 1
+  for (const w of words) {
+    const num = String(pr.number)
+    const title = pr.title.toLowerCase()
+    const [, repo, n] = w.match(/^([^#\s]+)#(\d+)$/) || w.match(/^()#?(\d+)$/) || []
+    if (n !== undefined) {
+      const inTitle = !repo && !w.startsWith('#') && title.includes(n)
+      if (repo && !pr.repo.toLowerCase().includes(repo)) return 0
+      if (!num.startsWith(n) && !inTitle) return 0
+      score += num === n ? 100 : num.startsWith(n) ? 50 : 5
+      continue
+    }
+    if (!matches(pr, w)) return 0
+    if (title.startsWith(w) || title.includes(' ' + w)) score += 12
+    else if (title.includes(w)) score += 6
+    if (pr.repo.toLowerCase().includes(w)) score += 4
+    if (pr.head.toLowerCase().includes(w)) score += 3
+    if (pr.author.toLowerCase().includes(w.replace(/^@/, ''))) score += 3
+  }
+  return score
+}
+
+// Best match first, then the most recently updated; with no query, every PR newest first.
+function paletteResults(query) {
+  return knownPrs().map(pr => [pr, paletteScore(pr, query)]).filter(([, score]) => score > 0)
+    .sort((a, b) => b[1] - a[1] || Date.parse(b[0].updatedAt) - Date.parse(a[0].updatedAt)).slice(0, 50).map(([pr]) => pr)
+}
+
+// `text` with each query word it contains marked, everything escaped.
+function highlight(text, query) {
+  const words = query.toLowerCase().split(/[\s#]+/).map(w => w.replace(/^@|^(repo|author|label):/, '')).filter(w => w.length > 1)
+  if (!words.length) return esc(text)
+  const re = new RegExp(`(${words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi')
+  return String(text).split(re).map((part, i) => i % 2 ? `<mark>${esc(part)}</mark>` : esc(part)).join('')
+}
+
+function openPalette() {
+  if (S.dialog) return
+  S.palette = { q: '', i: 0, items: [] }
+  $('#palette').innerHTML = `<div class="palette-backdrop anim-fade" data-act="palette-backdrop"><div class="palette" role="dialog" aria-modal="true" aria-label="Find a pull request">
+    <input class="palette-input" id="palette-input" type="search" placeholder="Find a PR by title, number, repo, branch, author or label, or paste a PR link" autocomplete="off" spellcheck="false" role="combobox" aria-controls="palette-list" aria-expanded="true">
+    <div class="palette-list" id="palette-list" role="listbox"></div>
+    <div class="palette-foot"><span><kbd>↑</kbd> <kbd>↓</kbd> move</span><span><kbd>↵</kbd> open here</span><span><kbd>⌘</kbd> <kbd>↵</kbd> open on GitHub</span><span><kbd>Esc</kbd> close</span></div>
+  </div></div>`
+  renderPalette()
+  $('#palette-input').focus()
+}
+
+function closePalette() {
+  S.palette = null
+  $('#palette').innerHTML = ''
+}
+
+function renderPalette() {
+  const P = S.palette
+  if (!P) return
+  const prs = paletteResults(P.q)
+  const link = prLink(P.q)
+  P.items = [...prs.map(pr => ({ pr })), ...(link && !prs.some(pr => pr.url === link.url) ? [{ link }] : [])]
+  P.i = Math.min(P.i, Math.max(0, P.items.length - 1))
+  const item = ({ pr, link }, i) => {
+    const attrs = `class="palette-item" id="palette-${i}" role="option" aria-selected="${i === P.i}" data-act="palette-pick" data-i="${i}"`
+    if (link) return `<button ${attrs}><span class="dot"></span><span class="t">Open ${esc(link.label)}</span><span class="lane">Not in your inbox</span><span class="m">Loads it from GitHub</span></button>`
+    const lane = LANE[pr.lane]
+    const state = pr.state && pr.state !== 'OPEN' ? (pr.state === 'MERGED' ? 'Merged' : 'Closed') : lane.label
+    return `<button ${attrs}><span class="dot" style="--dot:${lane.dot}"></span><span class="t">${highlight(pr.title, P.q)}</span><span class="lane">${esc(state)}</span>
+      <span class="m"><span>${highlight(`${pr.name}#${pr.number}`, P.q)}</span><span>${highlight('@' + pr.author, P.q)}</span><span class="br">${highlight(pr.head, P.q)}</span><span>updated ${esc(ago(Date.parse(pr.updatedAt)))}</span></span></button>`
+  }
+  $('#palette-list').innerHTML = P.items.length ? P.items.map(item).join('')
+    : `<div class="palette-empty">${S.data ? `No pull request matches “${esc(P.q.trim())}”. Paste a PR link to open one outside your inbox.` : 'Loading your pull requests…'}</div>`
+  $('#palette-input').setAttribute('aria-activedescendant', P.items.length ? `palette-${P.i}` : '')
+  $('#palette-list [aria-selected="true"]')?.scrollIntoView({ block: 'nearest' })
+}
+
+// Enter opens the PR in the panel and scrolls the board to its row; ⌘Enter opens it on GitHub.
+function pickPalette(i, github = false) {
+  const it = S.palette?.items[i]
+  if (!it) return
+  closePalette()
+  const url = it.link ? it.link.url : it.pr.url
+  if (github) return openUrl(url)
+  if (it.link) return openLinkedPr(url)
+  S.reveal = keyOf(it.pr)
+  openDetail(keyOf(it.pr))
+}
+
 // ---------- linked PRs ----------
 
 let linkedSeq = 0
@@ -1750,6 +1879,7 @@ const KEYS = [
   ['/', 'Search'], ['n', 'Toggle Needs me'], ['g', 'Group by repo or lane'], ['r', 'Refresh PRs'], ['⌘ R', 'Reload the app'],
   ['x', 'Tick or untick the open PR'], ['⇧ j', 'Tick it and move to the next PR (⇧ k or ⇧ ↑ for the previous)'],
   ['⌘ ↵', 'Merge & release the ticked PRs at once. With none ticked, opens it for the open PR; ⌘ ↵ again confirms. In a text box it sends the draft'],
+  ['⌘ ⇧ P', 'Find any PR by title, number, repo, branch, author or label, or paste a PR link'],
   ['?', 'This list'],
 ]
 
@@ -2369,6 +2499,8 @@ const ACTIONS = {
   },
   'dialog-close': () => closeDialog(),
   'dialog-backdrop': ({ el, ev }) => { if (ev.target === el) closeDialog() },
+  'palette-backdrop': ({ el, ev }) => { if (ev.target === el) closePalette() },
+  'palette-pick': ({ el, ev }) => pickPalette(Number(el.dataset.i), ev.metaKey || ev.ctrlKey),
   quick: ({ k, el }) => { S.drafts[k] = el.dataset.text; S.dialog.write = el.dataset.writes === 'true'; renderDialog(); focusEnd('ask-input') },
   'ask-write': ({ el }) => { S.dialog.write = el.checked },
   // A request that may change code runs as a task in the PR's worktree; a question runs read-only.
@@ -2416,12 +2548,29 @@ document.addEventListener('input', ({ target: t }) => {
   if (t.dataset.act === 'reply-draft') S.replyDrafts[t.dataset.run] = t.value
   if (t.dataset.act === 'comment-draft' && S.detail) S.comments[findPr(S.detail).url] = t.value
   if (t.id === 'search') { S.query = t.value; renderHeader(); renderBoard() }
+  if (t.id === 'palette-input' && S.palette) { S.palette.q = t.value; S.palette.i = 0; renderPalette() }
 })
 document.addEventListener('change', ({ target: t }) => {
   if (t.dataset.act === 'auto-limit') autoSettings({ [t.dataset.key]: Number(t.value) })
 })
 document.addEventListener('keydown', ev => {
   const t = ev.target
+  // ⌘⇧P (Ctrl⇧P elsewhere) opens or closes the PR finder, from anywhere. While it is open, the arrows, Enter
+  // and Esc are its own; everything else types into its box.
+  if ((ev.metaKey || ev.ctrlKey) && ev.shiftKey && !ev.altKey && ev.key.toLowerCase() === 'p') {
+    ev.preventDefault()
+    return S.palette ? closePalette() : openPalette()
+  }
+  if (S.palette) {
+    const n = S.palette.items.length
+    if (ev.key === 'Escape') { ev.preventDefault(); return closePalette() }
+    if (ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+      ev.preventDefault()
+      if (n) { S.palette.i = (S.palette.i + (ev.key === 'ArrowDown' ? 1 : -1) + n) % n; renderPalette() }
+      return
+    }
+    if (ev.key === 'Enter') { ev.preventDefault(); return pickPalette(S.palette.i, ev.metaKey || ev.ctrlKey) }
+  }
   if ((ev.metaKey || ev.ctrlKey) && ev.key === 'Enter') {
     if (t.dataset.act === 'draft') { ev.preventDefault(); $('[data-act="ask-send"]')?.click() }
     if (t.dataset.act === 'reply-draft') { ev.preventDefault(); ACTIONS['reply-send']({ run: t.dataset.run }) }
