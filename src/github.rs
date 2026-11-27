@@ -180,32 +180,23 @@ impl Pr {
         None
     }
 
-    /// Why an admin merge, which skips the required approval and the up-to-date rule, must not take this
-    /// PR. It is only for a PR whose checks all passed, with no conflicts and no changes requested, held
-    /// back by nothing but a missing approval or a branch behind its base. Someone else's PR keeps its
-    /// approval rule: an admin merge only takes it past a branch behind its base.
+    /// Why an admin merge must not take this PR. An admin merge skips whatever branch protection lets a repo
+    /// admin skip: failing or unfinished checks, a missing approval, changes requested, a branch behind its
+    /// base. It takes your PRs and anyone else's alike; the Merge & release dialog names what it skips before
+    /// you confirm. It still refuses what GitHub cannot merge at all (conflicts, a draft, mergeability not yet
+    /// worked out) and a PR that would merge the normal way.
     pub fn admin_merge_refusal(&self) -> Option<&'static str> {
         if !self.can_admin {
             return Some("You are not an admin of this repo");
         }
-        let theirs = self.is_theirs();
-        if !matches!(if theirs { self.merge_lane } else { self.lane }, Lane::Behind | Lane::Review) {
-            return Some("Only a PR held back by its approval or by being behind its base can be admin-merged");
+        if (if self.is_theirs() { self.merge_lane } else { self.lane }) == Lane::Ready {
+            return Some("It can merge the normal way");
         }
-        if self.ci != Ci::Pass {
-            return Some("Not all of its checks have passed");
+        if self.is_draft {
+            return Some("It is a draft; mark it ready first");
         }
         if self.mergeable != Mergeable::Mergeable {
             return Some("It has conflicts, or GitHub has not worked out whether it can merge");
-        }
-        if self.review == Some(ReviewDecision::ChangesRequested) {
-            return Some("A reviewer asked for changes");
-        }
-        if self.merge_state != MergeState::Behind && self.review != Some(ReviewDecision::ReviewRequired) {
-            return Some("Another branch rule blocks it, not its approval or being behind");
-        }
-        if theirs && (self.merge_state != MergeState::Behind || self.review == Some(ReviewDecision::ReviewRequired)) {
-            return Some("Someone else's PR needs its approval first; an admin merge only takes it past being behind");
         }
         None
     }
@@ -1014,7 +1005,7 @@ mod tests {
     }
 
     #[test]
-    fn only_a_green_pr_held_back_by_approval_or_being_behind_can_be_admin_merged() {
+    fn an_admin_merge_takes_a_pr_past_any_rule_an_admin_may_skip() {
         let held = || Pr {
             can_admin: true,
             lane: Lane::Behind,
@@ -1024,19 +1015,27 @@ mod tests {
             review: Some(ReviewDecision::ReviewRequired),
             ..Default::default()
         };
-        assert_eq!(held().admin_merge_refusal(), None);
-        assert_eq!(Pr { lane: Lane::Review, merge_state: MergeState::Blocked, ..held() }.admin_merge_refusal(), None);
-        assert_eq!(Pr { review: None, ..held() }.admin_merge_refusal(), None);
+        let allowed = [
+            ("behind and unapproved", held()),
+            ("needs approval only", Pr { lane: Lane::Review, merge_state: MergeState::Blocked, ..held() }),
+            ("behind only", Pr { review: None, ..held() }),
+            ("checks failing", Pr { lane: Lane::Fix, ci: Ci::Fail, ..held() }),
+            ("checks running", Pr { lane: Lane::Checking, ci: Ci::Running, ..held() }),
+            ("no checks", Pr { ci: Ci::None, ..held() }),
+            ("changes requested", Pr { lane: Lane::Changes, review: Some(ReviewDecision::ChangesRequested), ..held() }),
+            ("blocked by another rule", Pr { lane: Lane::Review, merge_state: MergeState::Blocked, review: None, ..held() }),
+            ("old and stale", Pr { lane: Lane::Stale, ..held() }),
+        ];
+        for (name, pr) in allowed {
+            assert_eq!(pr.admin_merge_refusal(), None, "{name}");
+        }
         let refused = [
             ("not an admin", Pr { can_admin: false, ..held() }),
             ("ready anyway", Pr { lane: Lane::Ready, ..held() }),
-            ("someone else's", Pr { lane: Lane::Waiting, ..held() }),
-            ("checks running", Pr { ci: Ci::Running, ..held() }),
-            ("no checks", Pr { ci: Ci::None, ..held() }),
-            ("optional check failing", Pr { ci: Ci::Fail, ..held() }),
-            ("mergeability unknown", Pr { mergeable: Mergeable::Unknown, ..held() }),
-            ("changes requested", Pr { review: Some(ReviewDecision::ChangesRequested), ..held() }),
-            ("blocked by another rule", Pr { lane: Lane::Review, merge_state: MergeState::Blocked, review: None, ..held() }),
+            ("draft", Pr { lane: Lane::Draft, is_draft: true, ..held() }),
+            ("conflicts", Pr { lane: Lane::Conflict, mergeable: Mergeable::Conflicting, ..held() }),
+            ("mergeability unknown", Pr { lane: Lane::Checking, mergeable: Mergeable::Unknown, ..held() }),
+            ("failing and conflicting", Pr { lane: Lane::Fix, ci: Ci::Fail, mergeable: Mergeable::Conflicting, ..held() }),
         ];
         for (name, pr) in refused {
             assert!(pr.admin_merge_refusal().is_some(), "{name}");
@@ -1044,7 +1043,7 @@ mod tests {
     }
 
     #[test]
-    fn someone_elses_pr_is_admin_merged_only_past_being_behind_once_approved() {
+    fn someone_elses_pr_takes_an_admin_merge_like_your_own() {
         let theirs = || Pr {
             can_admin: true,
             lane: Lane::Reviewed,
@@ -1055,14 +1054,22 @@ mod tests {
             review: Some(ReviewDecision::Approved),
             ..Default::default()
         };
-        assert_eq!(theirs().admin_merge_refusal(), None);
-        assert_eq!(Pr { lane: Lane::Waiting, review: None, ..theirs() }.admin_merge_refusal(), None);
-        let refused = [
+        let allowed = [
+            ("approved and behind", theirs()),
+            ("waiting on you", Pr { lane: Lane::Waiting, review: None, ..theirs() }),
             ("needs approval and behind", Pr { review: Some(ReviewDecision::ReviewRequired), ..theirs() }),
             ("needs approval only", Pr { merge_lane: Lane::Review, merge_state: MergeState::Blocked, review: Some(ReviewDecision::ReviewRequired), ..theirs() }),
-            ("ready anyway", Pr { merge_lane: Lane::Ready, merge_state: MergeState::Clean, ..theirs() }),
             ("changes requested", Pr { merge_lane: Lane::Changes, review: Some(ReviewDecision::ChangesRequested), ..theirs() }),
+            ("checks failing", Pr { merge_lane: Lane::Fix, ci: Ci::Fail, review: Some(ReviewDecision::ReviewRequired), ..theirs() }),
+        ];
+        for (name, pr) in allowed {
+            assert_eq!(pr.admin_merge_refusal(), None, "{name}");
+        }
+        let refused = [
+            ("ready anyway", Pr { merge_lane: Lane::Ready, merge_state: MergeState::Clean, ..theirs() }),
             ("not an admin", Pr { can_admin: false, ..theirs() }),
+            ("conflicts", Pr { merge_lane: Lane::Conflict, mergeable: Mergeable::Conflicting, ..theirs() }),
+            ("draft", Pr { merge_lane: Lane::Draft, is_draft: true, ..theirs() }),
         ];
         for (name, pr) in refused {
             assert!(pr.admin_merge_refusal().is_some(), "{name}");
